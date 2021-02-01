@@ -1,0 +1,200 @@
+<html>
+  <head>
+    <meta charset=utf-8>
+    <title>Coop四字熟語パズル</title>
+    <style>
+      #app {
+        margin: 2em auto 0em auto;
+        width: 800px;
+        display: flex;
+      }
+      #table {
+        width: 300px;
+        font-size: 2em;
+        font-family: serif;
+        display: flex;
+        flex-wrap: wrap;
+      }
+      .cell {
+        width: 60px;
+        height: 2em;
+        background-color: #eeeeee;
+        text-align: center;
+        outline-width: 4px;
+        margin: 4px;
+        vertical-align: middle;
+        line-height: 2em;
+      }
+      .cell:hover:not(.finished) {
+        background-color: #f0dede;
+      }
+      .finished {
+        background-color: #cae4ca;
+      }
+      .selected {
+        outline-style: solid;
+      }
+      .swap-move {
+        transition: transform 0.5s;
+        outline-style: solid;
+      }
+      #players {
+        list-style: none;
+      }
+      .player {
+        height: 2em;
+        background-color: #eeeeee;
+        margin: 4px;
+        width: 20em;
+        border-style: solid;
+        border-width: 4px;
+      }
+      .player input {
+        width: 100%;
+        height: 100%;
+        background-color: white;
+        border: none;
+        padding: 8px;
+      }
+      .player span {
+        padding: 8px;
+      }
+    </style>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
+    <!-- CDNJS :: Sortable (https://cdnjs.com/) -->
+    <script src="//cdn.jsdelivr.net/npm/sortablejs@1.8.4/Sortable.min.js"></script>
+    <!-- CDNJS :: Vue.Draggable (https://cdnjs.com/) -->
+    <script src="//cdnjs.cloudflare.com/ajax/libs/Vue.Draggable/2.20.0/vuedraggable.umd.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <transition-group id="table" tag="div" name="swap">
+        <div scope="row"
+          class="cell"
+          v-for="(char, index) in board"
+          v-bind:key="char.charIdent"
+          :data-char-id="char.charIdent"
+          :data-col-id="index"
+          v-bind:style="index in styles ? styles[index] : null"
+          v-on:click="click_char"
+          v-bind:class="{ selected: !(selected === null) && selected.charId == char.charIdent || index in touching
+            , finished: char.finished }">
+          {{ char.character }}
+        </div>
+      </transition-group>
+      <ul id="players">
+        <li v-for="(player, index) in players"
+          v-bind:style='{ borderColor: player.color }'
+          class="player">
+          <input v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name">
+          <span v-else>{{ player.name }}</span>
+        </li>
+      </ul>
+
+    </div>
+    <script>
+      const draggable = window['vuedraggable'];
+      let ws = new WebSocket("ws://" + location.host + location.pathname);
+      let app = new Vue({
+        el: '#app',
+        data: {
+          board: {},
+          selected: null,
+          my_id: null,
+          me: null,
+          styles: {},
+          players: {},
+          touching: {},
+        },
+        methods: {
+          update_name: function(event) {
+            ws.send(JSON.stringify({SetPlayerName: event.target.value}));
+          },
+          click_char: function(event) {
+            let target = event.target.dataset;
+            if (this.board[target.colId].finished){
+              return;
+            }
+            let style = { outlineColor: this.me.color };
+            if (this.selected === null) {
+              this.selected = target;
+              Vue.set(app.styles, target.colId, style);
+              ws.send(JSON.stringify({Touch: parseInt(target.colId)}));
+            } else {
+              Vue.set(app.styles, target.colId, style);
+              ws.send(JSON.stringify({Swap: [parseInt(target.colId), parseInt(this.selected.colId)]}));
+              let orig = this.board[target.colId];
+              Vue.set(this.board, target.colId, this.board[this.selected.colId]);
+              Vue.set(this.board, this.selected.colId, orig);
+              this.selected = null;
+            }
+          }
+        },
+        components: { draggable },
+      });
+      ws.addEventListener('message', event => {
+        let obj = JSON.parse(event.data);
+        if (obj === null) return;
+        if ("PutBoard" in obj){
+          let jukugos = obj.PutBoard.jukugos;
+          app.board = jukugos.flatMap(function (jukugo){
+            let result = jukugo[1].content;
+            if (jukugo[1].finished) {
+              for (elem of result) {
+                elem.finished = true;
+              }
+            }
+            return result});
+        } else if ("PutPlayers" in obj) {
+          let result = {};
+          for (let elem of obj.PutPlayers){
+            result[elem[0].toString()] = elem[1];
+          }
+          app.players = result;
+        } else if ("PutYou" in obj) {
+          app.my_id = obj.PutYou[0];
+          app.me = obj.PutYou[1];;
+        } else if ("AckTouch" in obj) {
+          let msg = obj.AckTouch;
+          if (app.my_id === msg[0]) return;
+          let style = { outlineColor: app.players[msg[0]].color };
+          Vue.set(app.styles, msg[1], style);
+          Vue.set(app.touching, msg[1], null);
+        } else if ("AckSwap" in obj) {
+          let msg = obj.AckSwap;
+          if (app.my_id === msg[0]) return;
+          let orig = app.board[msg[1]];
+          Vue.set(app.board, msg[1], app.board[msg[2]]);
+          Vue.set(app.board, msg[2], orig);
+          let style = { outlineColor: app.players[msg[0]].color };
+          Vue.set(app.styles, msg[1], style);
+          Vue.set(app.styles, msg[2], style);
+          app.$delete(app.touching, msg[1]);
+          app.$delete(app.touching, msg[2]);
+        } else if ("AckDone" in obj){
+          let row = obj.AckDone;
+          for (let i=row*4; i < row*4+4; i++){
+            Vue.set(app.board[i], "finished", true);
+          }
+        } else {
+          console.log(obj);
+        }
+      });
+
+      ws.addEventListener('open', event => {
+        console.log("connection established");
+        ws.send("hello");
+
+        function heartbeat(){
+          ws.send(JSON.stringify({Heartbeat: []}));
+          window.setTimeout(heartbeat, 2000.0);
+        }
+        heartbeat();
+
+      });
+      ws.onerror = event => console.log(event);
+      
+    </script>
+    
+  </body>
+</html>
