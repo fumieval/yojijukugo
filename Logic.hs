@@ -79,7 +79,7 @@ checkFinish :: HS.HashSet (V.Vector Char)
   -> Writer [Int] Board
 checkFinish library board = do
   jukugos' <- iforM (_jukugos board)
-    $ \i jukugo -> if HS.member (fmap character $ _content jukugo) library
+    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap character $ _content jukugo) library
       then do
         tell [i]
         pure jukugo { _finished = True }

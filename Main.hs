@@ -3,6 +3,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 module Main where
 
+import UnliftIO.Concurrent (forkIO)
 import qualified Prelude
 import Control.Lens
 import Control.Monad
@@ -25,6 +26,7 @@ import qualified Network.WebSockets as WS
 import RIO hiding ((%~), (.~), lens)
 import System.Environment (getArgs)
 import Control.Monad.Writer
+import qualified Network.Wai.Middleware.Static as W
 
 data ClientMessage = Touch Int
   | Swap (Int, Int)
@@ -55,6 +57,7 @@ palette =
 data Player = Player
   { _playerName :: String
   , _playerColor :: String
+  , _playerScore :: Int
   } deriving Generic
   deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
 makeLenses ''Player
@@ -65,6 +68,8 @@ data ServerMessage = PutBoard Board
   | AckTouch PlayerId Int
   | AckSwap PlayerId Int Int
   | AckDone Int
+  | PutStatus Text
+  | LevelFinished
   deriving Generic
   deriving (FromJSON, ToJSON) via CustomJSON '[TagSingleConstructors, SumObjectWithSingleField] ServerMessage
 
@@ -73,6 +78,7 @@ data RoomState = RoomState
   , _roomBoard :: Board
   , _roomPlayerConn :: IM.IntMap WS.Connection
   , _roomFreshPlayerId :: Int
+  , _roomLevel :: Double
   } deriving Generic
 makeLenses ''RoomState
 
@@ -116,7 +122,7 @@ withPlayer cont = bracket
     atomically $ do
       room <- readTVar vRoom
       let i = _roomFreshPlayerId room
-      let player = Player (show i) (palette Prelude.!! mod i 12)
+      let player = Player (show i) (palette Prelude.!! mod i 12) 0
       writeTVar vRoom
         $ roomPlayers . at i ?~ player
         $ roomPlayerConn . at i ?~ conn
@@ -130,6 +136,17 @@ withPlayer cont = bracket
       . (roomPlayerConn %~ IM.delete i)
       )
   (uncurry cont)
+
+recreateBoard :: SessionM ()
+recreateBoard = do
+  vRoom <- asks sessionRoom
+  server <- asks sessionServer
+  room0 <- readTVarIO vRoom
+  do
+    let nextLevel = _roomLevel room0 + 1.0
+    board <- liftIO $ generateBoard (libraryV server) $ numberOfJukugos nextLevel
+    atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLevel = nextLevel }
+    broadcast $ PutBoard board
 
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
@@ -171,14 +188,28 @@ wsApp sessionServer pending = do
                     Nothing -> pure mempty
                     Just board -> do
                       let (board', done) = runWriter $ checkFinish (libraryS sessionServer) board
-                      writeTVar sessionRoom $ room { _roomBoard = board' }
+                      let room' = room
+                            & roomBoard .~ board'
+                            & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
+                      writeTVar sessionRoom room'
                       pure $ do
                         broadcast $ AckSwap playerId i j
                         forM_ done $ broadcast . AckDone
+                        unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
+                        when (all _finished (_jukugos board')) $ do
+                          broadcast LevelFinished
+                          _ <- forkIO $ do
+                              threadDelay $ 5 * 1000000
+                              broadcast $ PutStatus ""
+                              recreateBoard
+                          broadcast $ PutStatus "次の問題へ進みます……"
           self
         WS.ControlMessage (WS.Close _ _) -> pure ()
         _ -> self
       pure ()
+
+numberOfJukugos :: Double -> Int
+numberOfJukugos = floor . (1.5**)
 
 acquireRoom :: Server -> Int -> IO (TVar RoomState)
 acquireRoom Server{..} roomId = do
@@ -186,8 +217,15 @@ acquireRoom Server{..} roomId = do
   case IM.lookup roomId m of
     Nothing -> do
       -- create a room
-      board <- generateBoard libraryV 8
-      v <- newTVarIO $ RoomState mempty board mempty 0
+      let initLevel = 2.0
+      board <- generateBoard libraryV $ numberOfJukugos initLevel
+      v <- newTVarIO $ RoomState
+        { _roomPlayers = mempty
+        , _roomBoard = board
+        , _roomPlayerConn = mempty
+        , _roomFreshPlayerId = 0
+        , _roomLevel = initLevel
+        }
       atomically $ modifyTVar' rooms $ IM.insert roomId v
       pure v
     Just room -> pure room
@@ -211,4 +249,5 @@ main = do
         file "index.html"
     runRIO lf $ logInfo "Started the server"
     Warp.run 3000
-      $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server) app
+      $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
+      $ W.static app

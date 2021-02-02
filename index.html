@@ -6,7 +6,6 @@
       #app {
         margin: 2em auto 0em auto;
         width: 800px;
-        display: flex;
       }
       #table {
         width: 300px;
@@ -14,6 +13,13 @@
         font-family: serif;
         display: flex;
         flex-wrap: wrap;
+      }
+      #message {
+        width: 100%;
+      }
+      #columns {
+        width: 100%;
+        display: flex;
       }
       .cell {
         width: 60px;
@@ -48,16 +54,27 @@
         width: 20em;
         border-style: solid;
         border-width: 4px;
+        display: flex;
       }
       .player input {
-        width: 100%;
-        height: 100%;
         background-color: white;
         border: none;
-        padding: 8px;
       }
-      .player span {
-        padding: 8px;
+      .name {
+        width: 50%;
+        padding: 6px;
+      }
+      .score {
+        margin-left: 4px;
+        width: 50%;
+        margin-right: none;
+        text-align: right;
+        padding: 6px;
+      }
+      #message {
+        text-align: center;
+        font-size: 1.5em;
+        font-family: serif;
       }
     </style>
     <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
@@ -68,30 +85,42 @@
   </head>
   <body>
     <div id="app">
-      <transition-group id="table" tag="div" name="swap">
-        <div scope="row"
-          class="cell"
-          v-for="(char, index) in board"
-          v-bind:key="char.charIdent"
-          :data-char-id="char.charIdent"
-          :data-col-id="index"
-          v-bind:style="index in styles ? styles[index] : null"
-          v-on:click="click_char"
-          v-bind:class="{ selected: !(selected === null) && selected.charId == char.charIdent || index in touching
-            , finished: char.finished }">
-          {{ char.character }}
-        </div>
-      </transition-group>
-      <ul id="players">
-        <li v-for="(player, index) in players"
-          v-bind:style='{ borderColor: player.color }'
-          class="player">
-          <input v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name">
-          <span v-else>{{ player.name }}</span>
-        </li>
-      </ul>
+      <div id="message" v-if='server_message != ""'>{{ server_message }}</div>
+      <div id="columns">
+        <transition-group id="table" tag="div" name="swap">
+          <div scope="row"
+            class="cell"
+            v-for="(char, index) in board"
+            v-bind:key="char.charIdent"
+            :data-char-id="char.charIdent"
+            :data-col-id="index"
+            v-bind:style="index in styles ? styles[index] : null"
+            v-on:click="click_char"
+            v-bind:class="{ selected: !(selected === null) && selected.charId == char.charIdent || index in touching
+              , finished: char.finished }">
+            {{ char.character }}
+          </div>
+        </transition-group>
+        <ul id="players">
+          <li v-for="(player, index) in players"
+            v-bind:style='{ borderColor: player.color }'
+            class="player">
+            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name">
+            <div v-else class="name">{{ player.name }}</div>
+            <div class="score">
+              {{ player.score }}
+            </div>
+          </li>
+        </ul>
+      </div>
 
     </div>
+    <audio src="/static/cymbal.mp3" id="a-cymbal"></audio>
+    <audio src="/static/dora.mp3" id="a-dora"></audio>
+    <audio src="/static/rei.mp3" id="a-rei"></audio>
+    <audio src="/static/bell.mp3" id="a-bell"></audio>
+    <audio src="/static/hihat.mp3" id="a-hihat"></audio>
+    <audio src="/static/reverse-hihat.mp3" id="a-reverse-hihat"></audio>
     <script>
       const draggable = window['vuedraggable'];
       let ws = new WebSocket("ws://" + location.host + location.pathname);
@@ -105,6 +134,7 @@
           styles: {},
           players: {},
           touching: {},
+          server_message: "",
         },
         methods: {
           update_name: function(event) {
@@ -120,13 +150,30 @@
               this.selected = target;
               Vue.set(app.styles, target.colId, style);
               ws.send(JSON.stringify({Touch: parseInt(target.colId)}));
+
+              let sound = document.getElementById("a-hihat");
+              sound.currentTime = 0;
+              sound.play();
             } else {
-              Vue.set(app.styles, target.colId, style);
-              ws.send(JSON.stringify({Swap: [parseInt(target.colId), parseInt(this.selected.colId)]}));
-              let orig = this.board[target.colId];
-              Vue.set(this.board, target.colId, this.board[this.selected.colId]);
-              Vue.set(this.board, this.selected.colId, orig);
+              if (target.colId === this.selected.colId)
+              {
+                let sound = document.getElementById("a-reverse-hihat");
+                sound.currentTime = 0;
+                sound.play();
+              }
+              else {
+                Vue.set(app.styles, target.colId, style);
+                ws.send(JSON.stringify({Swap: [parseInt(target.colId), parseInt(this.selected.colId)]}));
+                let orig = this.board[target.colId];
+                Vue.set(this.board, target.colId, this.board[this.selected.colId]);
+                Vue.set(this.board, this.selected.colId, orig);
+                let sound = document.getElementById("a-rei");
+                sound.currentTime = 0;
+                sound.play();
+              }
+
               this.selected = null;
+
             }
           }
         },
@@ -144,6 +191,9 @@
                 elem.finished = true;
               }
             }
+            let sound = document.getElementById("a-bell");
+            sound.currentTime = 0;
+            sound.play();
             return result});
         } else if ("PutPlayers" in obj) {
           let result = {};
@@ -154,6 +204,12 @@
         } else if ("PutYou" in obj) {
           app.my_id = obj.PutYou[0];
           app.me = obj.PutYou[1];;
+        } else if ("PutStatus" in obj) {
+          app.server_message = obj.PutStatus;
+        } else if ("LevelFinished" in obj) {
+          let sound = document.getElementById("a-dora");
+          sound.currentTime = 0;
+          sound.play();
         } else if ("AckTouch" in obj) {
           let msg = obj.AckTouch;
           if (app.my_id === msg[0]) return;
@@ -176,6 +232,9 @@
           for (let i=row*4; i < row*4+4; i++){
             Vue.set(app.board[i], "finished", true);
           }
+          let sound = document.getElementById("a-cymbal");
+          sound.currentTime = 0;
+          sound.play();
         } else {
           console.log(obj);
         }
