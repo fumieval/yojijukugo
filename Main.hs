@@ -27,6 +27,7 @@ import RIO hiding ((%~), (.~), lens)
 import System.Environment (getArgs)
 import Control.Monad.Writer
 import qualified Network.Wai.Middleware.Static as W
+import System.Random.Stateful
 
 data ClientMessage = Touch Int
   | Swap (Int, Int)
@@ -62,7 +63,7 @@ data Player = Player
   deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
 makeLenses ''Player
 
-data ServerMessage = PutBoard Board
+data ServerMessage = PutBoard Double Board
   | PutPlayers (IM.IntMap Player)
   | PutYou (PlayerId, Player)
   | AckTouch PlayerId Int
@@ -79,6 +80,7 @@ data RoomState = RoomState
   , _roomPlayerConn :: IM.IntMap WS.Connection
   , _roomFreshPlayerId :: Int
   , _roomLevel :: Double
+  , _roomRNG :: RNG
   } deriving Generic
 makeLenses ''RoomState
 
@@ -113,13 +115,13 @@ broadcast msg = do
     $ \conn -> liftIO (WS.sendTextData conn (J.encode msg))
     `catch` \(_ :: SomeException) -> pure ()
 
-withPlayer :: (PlayerId -> Player -> SessionM a) -> SessionM a
+withPlayer :: (PlayerId -> SessionM a) -> SessionM a
 withPlayer cont = bracket
   (do
     conn <- asks sessionConn
     vRoom <- asks sessionRoom
 
-    atomically $ do
+    result <- atomically $ do
       room <- readTVar vRoom
       let i = _roomFreshPlayerId room
       let player = Player (show i) (palette Prelude.!! mod i 12) 0
@@ -128,14 +130,17 @@ withPlayer cont = bracket
         $ roomPlayerConn . at i ?~ conn
         $ roomFreshPlayerId +~ 1
         $ room
-      pure (PlayerId i, player))
-  (\(PlayerId i, _) -> do
+      pure (PlayerId i, player)
+    send $ PutYou result
+    broadcastPlayers
+    pure $ fst result)
+  (\(PlayerId i) -> do
     vRoom <- asks sessionRoom
     atomically $ modifyTVar vRoom
       $ (roomPlayers %~ IM.delete i)
       . (roomPlayerConn %~ IM.delete i)
-      )
-  (uncurry cont)
+    broadcastPlayers)
+  cont
 
 recreateBoard :: SessionM ()
 recreateBoard = do
@@ -144,9 +149,14 @@ recreateBoard = do
   room0 <- readTVarIO vRoom
   do
     let nextLevel = _roomLevel room0 + 1.0
-    board <- liftIO $ generateBoard (libraryV server) $ numberOfJukugos nextLevel
+    board <- liftIO $ generateBoard (libraryV server) (_roomRNG room0) $ numberOfJukugos nextLevel
     atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLevel = nextLevel }
-    broadcast $ PutBoard board
+    broadcast $ PutBoard nextLevel board
+
+broadcastPlayers :: SessionM ()
+broadcastPlayers = do
+  room <- asks sessionRoom >>= readTVarIO
+  broadcast $ PutPlayers $ _roomPlayers room
 
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
@@ -157,15 +167,8 @@ wsApp sessionServer pending = do
     s -> error $ "Failed to parse roomId: " ++ show s
   sessionRoom <- acquireRoom sessionServer roomId
 
-  runRIO Session{..} $ withPlayer $ \playerId player -> do
-    send $ PutYou (playerId, player)
-
-    let broadcastPlayers = do
-          room <- readTVarIO sessionRoom
-          broadcast $ PutPlayers $ _roomPlayers room
-
-    readTVarIO sessionRoom >>= send . PutBoard . _roomBoard
-    broadcastPlayers
+  runRIO Session{..} $ withPlayer $ \playerId -> do
+    readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomLevel room) (_roomBoard room)
 
     fix $ \self -> do
       liftIO (WS.receive sessionConn) >>= \case
@@ -184,25 +187,29 @@ wsApp sessionServer pending = do
                   let p = divMod i 4
                   let q = divMod j 4
                   room <- readTVar sessionRoom
-                  case swap p q $ _roomBoard room of
-                    Nothing -> pure mempty
-                    Just board -> do
-                      let (board', done) = runWriter $ checkFinish (libraryS sessionServer) board
-                      let room' = room
-                            & roomBoard .~ board'
-                            & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
-                      writeTVar sessionRoom room'
-                      pure $ do
-                        broadcast $ AckSwap playerId i j
-                        forM_ done $ broadcast . AckDone
-                        unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
-                        when (all _finished (_jukugos board')) $ do
-                          broadcast LevelFinished
-                          _ <- forkIO $ do
-                              threadDelay $ 5 * 1000000
-                              broadcast $ PutStatus ""
-                              recreateBoard
-                          broadcast $ PutStatus "次の問題へ進みます……"
+
+                  if orOf (jukugos . ix (fst p) . finished) (_roomBoard room)
+                    || orOf (jukugos . ix (fst q) . finished) (_roomBoard room)
+                    then pure mempty -- $ send $ AckSwap playerId j i
+                    else case swap p q $ _roomBoard room of
+                      Nothing -> pure mempty -- ERROR
+                      Just board -> do
+                        let (board', done) = runWriter $ checkFinish (libraryS sessionServer) board
+                        let room' = room
+                              & roomBoard .~ board'
+                              & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
+                        writeTVar sessionRoom room'
+                        pure $ do
+                          broadcast $ AckSwap playerId i j
+                          forM_ done $ broadcast . AckDone
+                          unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
+                          when (all _finished (_jukugos board')) $ do
+                            broadcast LevelFinished
+                            _ <- forkIO $ do
+                                threadDelay $ 5 * 1000000
+                                broadcast $ PutStatus ""
+                                recreateBoard
+                            broadcast $ PutStatus "次の問題へ進みます……"
           self
         WS.ControlMessage (WS.Close _ _) -> pure ()
         _ -> self
@@ -218,13 +225,15 @@ acquireRoom Server{..} roomId = do
     Nothing -> do
       -- create a room
       let initLevel = 2.0
-      board <- generateBoard libraryV $ numberOfJukugos initLevel
+      rng <- newAtomicGenM $ mkStdGen roomId
+      board <- generateBoard libraryV rng $ numberOfJukugos initLevel
       v <- newTVarIO $ RoomState
         { _roomPlayers = mempty
         , _roomBoard = board
         , _roomPlayerConn = mempty
         , _roomFreshPlayerId = 0
         , _roomLevel = initLevel
+        , _roomRNG = rng
         }
       atomically $ modifyTVar' rooms $ IM.insert roomId v
       pure v
@@ -248,6 +257,6 @@ main = do
       get "/game/:id" $ 
         file "index.html"
     runRIO lf $ logInfo "Started the server"
-    Warp.run 3000
+    Warp.run 4444
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app

@@ -6,6 +6,7 @@
       #app {
         margin: 2em auto 0em auto;
         width: 800px;
+        font-family: serif;
       }
       #table {
         width: 300px;
@@ -74,7 +75,6 @@
       #message {
         text-align: center;
         font-size: 1.5em;
-        font-family: serif;
       }
     </style>
     <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
@@ -86,26 +86,27 @@
   <body>
     <div id="app">
       <div id="message" v-if='server_message != ""'>{{ server_message }}</div>
+      <div id="difficulty">第{{ difficulty }}層</div>
       <div id="columns">
         <transition-group id="table" tag="div" name="swap">
           <div scope="row"
             class="cell"
             v-for="(char, index) in board"
-            v-bind:key="char.charIdent"
-            :data-char-id="char.charIdent"
+            v-bind:key="char.i"
+            :data-char-id="char.i"
             :data-col-id="index"
             v-bind:style="index in styles ? styles[index] : null"
             v-on:click="click_char"
-            v-bind:class="{ selected: !(selected === null) && selected.charId == char.charIdent || index in touching
+            v-bind:class="{ selected: !(selected === null) && selected == index || index in touching
               , finished: char.finished }">
-            {{ char.character }}
+            {{ char.c }}
           </div>
         </transition-group>
         <ul id="players">
           <li v-for="(player, index) in players"
             v-bind:style='{ borderColor: player.color }'
             class="player">
-            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name">
+            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name" :value="player.name">
             <div v-else class="name">{{ player.name }}</div>
             <div class="score">
               {{ player.score }}
@@ -113,7 +114,7 @@
           </li>
         </ul>
       </div>
-
+      音量調節 <input type="range" min="0" max="10" v-on:change="set_volume">
     </div>
     <audio src="/static/cymbal.mp3" id="a-cymbal"></audio>
     <audio src="/static/dora.mp3" id="a-dora"></audio>
@@ -123,7 +124,8 @@
     <audio src="/static/reverse-hihat.mp3" id="a-reverse-hihat"></audio>
     <script>
       const draggable = window['vuedraggable'];
-      let ws = new WebSocket("ws://" + location.host + location.pathname);
+      let scheme = location.protocol === 'https:' ? "wss://" : "ws://";
+      let ws = new WebSocket(scheme + location.host + location.pathname);
       let app = new Vue({
         el: '#app',
         data: {
@@ -134,39 +136,43 @@
           styles: {},
           players: {},
           touching: {},
+          difficulty: 0,
           server_message: "",
         },
         methods: {
+          set_volume: function(event){
+            for (elem of document.getElementsByTagName("audio")){
+              elem.volume = event.target.value / 10;
+            }
+          },
           update_name: function(event) {
             ws.send(JSON.stringify({SetPlayerName: event.target.value}));
           },
           click_char: function(event) {
-            let target = event.target.dataset;
-            if (this.board[target.colId].finished){
+            let target = event.target.dataset.colId;
+            if (this.board[target].finished){
               return;
             }
             let style = { outlineColor: this.me.color };
             if (this.selected === null) {
               this.selected = target;
-              Vue.set(app.styles, target.colId, style);
-              ws.send(JSON.stringify({Touch: parseInt(target.colId)}));
+              Vue.set(app.styles, target, style);
+              ws.send(JSON.stringify({Touch: parseInt(target)}));
 
               let sound = document.getElementById("a-hihat");
               sound.currentTime = 0;
               sound.play();
             } else {
-              if (target.colId === this.selected.colId)
+              if (target === this.selected)
               {
                 let sound = document.getElementById("a-reverse-hihat");
                 sound.currentTime = 0;
                 sound.play();
               }
               else {
-                Vue.set(app.styles, target.colId, style);
-                ws.send(JSON.stringify({Swap: [parseInt(target.colId), parseInt(this.selected.colId)]}));
-                let orig = this.board[target.colId];
-                Vue.set(this.board, target.colId, this.board[this.selected.colId]);
-                Vue.set(this.board, this.selected.colId, orig);
+                Vue.set(app.styles, target, style);
+                ws.send(JSON.stringify({Swap: [parseInt(target), parseInt(this.selected)]}));
+
                 let sound = document.getElementById("a-rei");
                 sound.currentTime = 0;
                 sound.play();
@@ -183,7 +189,8 @@
         let obj = JSON.parse(event.data);
         if (obj === null) return;
         if ("PutBoard" in obj){
-          let jukugos = obj.PutBoard.jukugos;
+          app.difficulty = obj.PutBoard[0];
+          let jukugos = obj.PutBoard[1].jukugos;
           app.board = jukugos.flatMap(function (jukugo){
             let result = jukugo[1].content;
             if (jukugo[1].finished) {
@@ -218,7 +225,6 @@
           Vue.set(app.touching, msg[1], null);
         } else if ("AckSwap" in obj) {
           let msg = obj.AckSwap;
-          if (app.my_id === msg[0]) return;
           let orig = app.board[msg[1]];
           Vue.set(app.board, msg[1], app.board[msg[2]]);
           Vue.set(app.board, msg[2], orig);
@@ -227,6 +233,10 @@
           Vue.set(app.styles, msg[2], style);
           app.$delete(app.touching, msg[1]);
           app.$delete(app.touching, msg[2]);
+          if (app.my_id !== msg[0]) {
+            if (this.selected === msg[1]) { this.selected = msg[2] };
+            if (this.selected === msg[2]) { this.selected = msg[1] };
+          }
         } else if ("AckDone" in obj){
           let row = obj.AckDone;
           for (let i=row*4; i < row*4+4; i++){

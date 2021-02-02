@@ -9,17 +9,17 @@ import Data.Text (Text)
 import Data.Traversable
 import Data.Vector.Instances ()
 import Deriving.Aeson.Stock
-import System.Random
+import System.Random.Stateful
 import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
 data Character = Character
-  { charIdent :: Text
-  , character :: Char
+  { charI :: Text
+  , charC :: Char
   } deriving (Generic, Show)
-  deriving (FromJSON, ToJSON) via Vanilla Character
+  deriving (FromJSON, ToJSON) via PrefixedSnake "char" Character
 
 data Jukugo = Jukugo
   { _finished :: Bool
@@ -54,32 +54,34 @@ swap (r0, c0) (r1, c1)
       pure (Just alpha', Just bravo')
     x -> pure x
 
-randomise :: Board -> IO Board
-randomise board = do
-  i <- randomRIO (0, IM.size (_jukugos board) - 1)
-  j <- randomRIO (0, IM.size (_jukugos board) - 1)
-  p <- randomRIO (0, 3)
-  q <- randomRIO (0, 3)
+type RNG = AtomicGenM StdGen
+
+randomise :: RNG -> Board -> IO Board
+randomise gen board = do
+  i <- randomRM (0, IM.size (_jukugos board) - 1) gen
+  j <- randomRM (0, IM.size (_jukugos board) - 1) gen
+  p <- randomRM (0, 3) gen
+  q <- randomRM (0, 3) gen
   maybe (error "Failed to swap!") pure $ swap (i, p) (j, q) board
 
 generateBoard
   :: V.Vector (V.Vector Char) -- ^ all list of jukugos
-  -> Int -- ^ number of jukugos
+  -> RNG -> Int -- ^ number of jukugos
   -> IO Board
-generateBoard library population = do
-  jukugos <- fmap IM.fromList $ for [0..population - 1] $ \i -> do
-    j <- randomRIO (0, V.length library - 1) -- TODO: prevent duplicates
+generateBoard library gen population = do
+  jukugos' <- fmap IM.fromList $ for [0..population - 1] $ \i -> do
+    j <- randomRM (0, V.length library - 1) gen -- TODO: prevent duplicates
     let jukugo = library V.! j
-    uid <- V.replicateM 4 (T.pack . (show :: Word -> String) <$> randomIO)
+    uid <- V.replicateM 4 (T.pack . (show :: Word -> String) <$> randomM gen)
     pure (i, Jukugo False $ V.zipWith Character uid jukugo)
-  foldM (\b _ -> randomise b) (Board jukugos) [0..population * 4]
+  foldM (\b _ -> randomise gen b) (Board jukugos') [0..population * population * 4]
 
 checkFinish :: HS.HashSet (V.Vector Char)
   -> Board
   -> Writer [Int] Board
 checkFinish library board = do
   jukugos' <- iforM (_jukugos board)
-    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap character $ _content jukugo) library
+    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap charC $ _content jukugo) library
       then do
         tell [i]
         pure jukugo { _finished = True }
