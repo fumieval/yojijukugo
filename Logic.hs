@@ -5,18 +5,17 @@ import Control.Lens
 import Control.Lens.Unsound
 import Control.Monad.Trans.Writer
 import Control.Monad
-import Data.Text (Text)
-import Data.Traversable
 import Data.Vector.Instances ()
 import Deriving.Aeson.Stock
 import System.Random.Stateful
 import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
-import qualified Data.Text as T
+import qualified Data.IntSet as IS
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
 
 data Character = Character
-  { charI :: Text
+  { charI :: Int
   , charC :: Char
   } deriving (Generic, Show)
   deriving (FromJSON, ToJSON) via PrefixedSnake "char" Character
@@ -64,17 +63,52 @@ randomise gen board = do
   q <- randomRM (0, 3) gen
   maybe (error "Failed to swap!") pure $ swap (i, p) (j, q) board
 
+type Library = V.Vector (V.Vector Char)
+
 generateBoard
-  :: V.Vector (V.Vector Char) -- ^ all list of jukugos
+  :: Library -- ^ all list of jukugos
   -> RNG -> Int -- ^ number of jukugos
   -> IO Board
 generateBoard library gen population = do
-  jukugos' <- fmap IM.fromList $ for [0..population - 1] $ \i -> do
-    j <- randomRM (0, V.length library - 1) gen -- TODO: prevent duplicates
-    let jukugo = library V.! j
-    uid <- V.replicateM 4 (T.pack . (show :: Word -> String) <$> randomM gen)
-    pure (i, Jukugo False $ V.zipWith Character uid jukugo)
+  jukugos' <- populate library gen population
   foldM (\b _ -> randomise gen b) (Board jukugos') [0..population * population * 4]
+
+type CharSet = IS.IntSet
+
+toCharSet :: V.Vector Char -> IS.IntSet
+toCharSet = IS.fromList . map fromEnum . V.toList
+
+sampleIntSet :: (RandomGenM g r m) => g -> IS.IntSet -> m Int
+sampleIntSet gen s = case IS.splitRoot s of
+  [_] -> do
+    let vec = V.fromList $ IS.toList s
+    i <- randomRM (0, V.length vec - 1) gen
+    pure $! vec V.! i
+  [l, r] -> do
+    let m = IS.size l
+    let n = IS.size r
+    i <- randomRM (0, m + n - 1) gen
+    if i < m
+      then sampleIntSet gen l
+      else sampleIntSet gen r
+  _ -> error "FIXME: splitRoot"
+
+populate
+  :: Library
+  -> RNG
+  -> Int
+  -> IO (IM.IntMap Jukugo)
+populate library gen count = go (IS.fromList [0..V.length library - 1]) IS.empty IM.empty count where
+  go _ _ board (-1) = pure board
+  go available _ board _ | IS.null available = pure board
+  go available pool board counter = do
+    i <- sampleIntSet gen available
+    let jukugo = library V.! i
+    let cset = toCharSet jukugo
+    let !pool' = pool `IS.union` cset
+    let !available' = IS.filter (\j -> not $ all ((`IS.member` pool') . fromEnum) (library V.! j)) available
+    let !jukugo' = Jukugo False $ V.zipWith Character (V.enumFromTo (counter * 4) (counter * 4 + 3)) jukugo
+    go available' pool' (IM.insert counter jukugo' board) (counter - 1)
 
 checkFinish :: HS.HashSet (V.Vector Char)
   -> Board

@@ -93,7 +93,6 @@
             class="cell"
             v-for="(char, index) in board"
             v-bind:key="char.i"
-            :data-char-id="char.i"
             :data-col-id="index"
             v-bind:style="index in styles ? styles[index] : null"
             v-on:click="click_char"
