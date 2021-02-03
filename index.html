@@ -2,81 +2,7 @@
   <head>
     <meta charset=utf-8>
     <title>Coop四字熟語パズル</title>
-    <style>
-      #app {
-        margin: 2em auto 0em auto;
-        width: 800px;
-        font-family: serif;
-      }
-      #table {
-        width: 300px;
-        font-size: 2em;
-        font-family: serif;
-        display: flex;
-        flex-wrap: wrap;
-      }
-      #message {
-        width: 100%;
-      }
-      #columns {
-        width: 100%;
-        display: flex;
-      }
-      .cell {
-        width: 60px;
-        height: 2em;
-        background-color: #eeeeee;
-        text-align: center;
-        outline-width: 4px;
-        margin: 4px;
-        vertical-align: middle;
-        line-height: 2em;
-      }
-      .cell:hover:not(.finished) {
-        background-color: #f0dede;
-      }
-      .finished {
-        background-color: #cae4ca;
-      }
-      .selected {
-        outline-style: solid;
-      }
-      .swap-move {
-        transition: transform 0.5s;
-        outline-style: solid;
-      }
-      #players {
-        list-style: none;
-      }
-      .player {
-        height: 2em;
-        background-color: #eeeeee;
-        margin: 4px;
-        width: 20em;
-        border-style: solid;
-        border-width: 4px;
-        display: flex;
-      }
-      .player input {
-        background-color: white;
-        border: none;
-      }
-      .name {
-        width: 50%;
-        padding: 6px;
-      }
-      .score {
-        margin-left: 4px;
-        width: 50%;
-        margin-right: none;
-        text-align: right;
-        padding: 6px;
-      }
-      #message {
-        text-align: center;
-        font-size: 1.5em;
-      }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
     <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
     <!-- CDNJS :: Sortable (https://cdnjs.com/) -->
     <script src="https://unpkg.com/vue-cookies@1.7.4/vue-cookies.js"></script>
@@ -148,6 +74,9 @@
               elem.volume = val / 10;
             };
             $cookies.set("volume", val);
+            let sound = document.getElementById("a-rei");
+            sound.currentTime = 0;
+            sound.play();
           }
         },
         methods: {
