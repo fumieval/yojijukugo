@@ -37,7 +37,7 @@ ul {
   color: red;
 }
 
-@media (width >= 900px)
+@media (min-width: 900px)
 {
   #table {
     width: 600px;
@@ -47,7 +47,7 @@ ul {
   }
 }
 
-@media (width < 900px)
+@media (max-width: 900px)
 {
   #table {
     width: 300px;
