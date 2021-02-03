@@ -26,13 +26,19 @@
           </div>
         </transition-group>
         <ul id="players">
-          <li v-for="(player, index) in players"
+          <li v-for="(player, name) in players"
             v-bind:style='{ borderColor: player.color }'
             class="player">
-            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-model="my_name">
-            <div v-else class="name">{{ player.name }}</div>
+            <input class="name" v-if="player.id == my_id.toString()" type="text" placeholder="Your name" v-model="my_name">
+            <div v-else class="name">{{ name }}</div>
             <div class="score">
-              {{ player.score }}
+              {{ name in scoreboard ? scoreboard[name] : 0 }}
+            </div>
+          </li>
+          <li v-for="(score, name) in scoreboard" v-if="!(name in players)" class="player">
+            <div class="name">{{ name }}</div>
+            <div class="score">
+              {{ score }}
             </div>
           </li>
         </ul>
@@ -53,6 +59,7 @@
         el: '#app',
         data: {
           board: {},
+          scoreboard: {},
           selected: null,
           my_id: null,
           my_name: null,
@@ -122,7 +129,8 @@
         let obj = JSON.parse(event.data);
         if (obj === null) return;
         if ("PutBoard" in obj){
-          app.difficulty = obj.PutBoard.difficulty;
+          app.scoreboard = obj.PutBoard.scoreboard;
+          app.difficulty = obj.PutBoard.boardDifficulty;
           let jukugos = obj.PutBoard.jukugos;
           app.board = jukugos.flatMap(function (jukugo){
             let result = jukugo[1].content;
@@ -138,9 +146,12 @@
         } else if ("PutPlayers" in obj) {
           let result = {};
           for (let elem of obj.PutPlayers){
-            result[elem[0].toString()] = elem[1];
+            elem[1].id = elem[0];
+            result[elem[1].name] = elem[1];
           }
           app.players = result;
+        } else if ("PutScoreboard" in obj) {
+          app.scoreboard = obj.PutScoreboard;
         } else if ("PutYou" in obj) {
           app.my_id = obj.PutYou[0];
           app.me = obj.PutYou[1];;

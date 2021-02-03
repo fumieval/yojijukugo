@@ -11,6 +11,7 @@ import System.Random.Stateful
 import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
+import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import qualified Data.Text as T
 
@@ -27,9 +28,12 @@ data Jukugo = Jukugo
   deriving (FromJSON, ToJSON) via Prefixed "_" Jukugo
 makeLenses ''Jukugo
 
+type Scoreboard = Map.Map T.Text Int
+
 data Board = Board
   { _jukugos :: IM.IntMap Jukugo
   , _boardDifficulty :: Double
+  , _scoreboard :: Scoreboard
   } deriving (Generic, Show)
   deriving (FromJSON, ToJSON) via Prefixed "_" Board
 makeLenses ''Board
@@ -71,11 +75,12 @@ generateBoard
   :: Library -- ^ all list of jukugos
   -> RNG
   -> Double
+  -> Scoreboard
   -> IO Board
-generateBoard library gen difficulty = do
+generateBoard library gen difficulty scores = do
   let population = floor $ 1.5 ** difficulty
   jukugos' <- populate library gen population
-  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty) [0..population * population * 4]
+  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty scores) [0..population * population * 4]
 
 type CharSet = IS.IntSet
 

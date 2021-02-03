@@ -16,12 +16,13 @@ import qualified Data.Aeson as J
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.IntMap.Strict as IM
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WS
 import qualified Network.WebSockets as WS
-import RIO hiding ((%~), (.~), lens)
+import RIO hiding ((^.), (%~), (.~), lens)
 import System.Environment (getArgs)
 import Control.Monad.Writer
 import qualified Network.Wai.Middleware.Static as W
@@ -33,7 +34,7 @@ import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 data ClientMessage = Touch Int
   | Untouch Int
   | Swap (Int, Int)
-  | SetPlayerName String
+  | SetPlayerName Text
   | Heartbeat
   deriving (Show, Generic)
   deriving (FromJSON, ToJSON) via CustomJSON '[TagSingleConstructors, SumObjectWithSingleField] ClientMessage
@@ -58,14 +59,14 @@ palette =
 
 
 data Player = Player
-  { _playerName :: String
+  { _playerName :: Text
   , _playerColor :: String
-  , _playerScore :: Int
   } deriving Generic
   deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
 makeLenses ''Player
 
 data ServerMessage = PutBoard Board
+  | PutScoreboard Scoreboard
   | PutPlayers (IM.IntMap Player)
   | PutYou (PlayerId, Player)
   | AckTouch PlayerId Int
@@ -126,7 +127,7 @@ withPlayer cont = bracket
     result <- atomically $ do
       room <- readTVar vRoom
       let i = _roomFreshPlayerId room
-      let player = Player (show i) (palette Prelude.!! mod i 12) 0
+      let player = Player (T.pack $ show i) (palette Prelude.!! mod i 12)
       writeTVar vRoom
         $ roomPlayers . at i ?~ player
         $ roomPlayerConn . at i ?~ conn
@@ -151,7 +152,7 @@ recreateBoard = do
   room0 <- readTVarIO vRoom
 
   let nextLevel = _boardDifficulty (_roomBoard room0) + 1.0
-  board <- liftIO $ generateBoard (library server) (_roomRNG room0) nextLevel
+  board <- liftIO $ generateBoard (library server) (_roomRNG room0) nextLevel (_scoreboard $ _roomBoard room0)
   atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board }
   broadcast $ PutBoard board
 
@@ -176,15 +177,16 @@ saveSnapshot roomId board = do
 updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
   room <- readTVar sessionRoom
+  let name = room ^. roomPlayers . ix (unPlayerId playerId) . playerName
   let (board', done) = runWriter $ checkFinish (library sessionServer) board
+  let board'' = board' & scoreboard %~ Map.insertWith (+) name (length done)
   let room' = room
-        & roomBoard .~ board'
-        & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
+        & roomBoard .~ board''
   writeTVar sessionRoom room'
   pure $ do
     forM_ done $ broadcast . AckDone
     unless (null done) $ do
-      broadcast $ PutPlayers $ _roomPlayers room'
+      broadcast $ PutScoreboard $ board'' ^. scoreboard
       _ <- forkIO $ saveSnapshot sessionRoomId board'
       pure ()
     when (all _finished (_jukugos board')) $ do
@@ -245,7 +247,7 @@ acquireRoom Server{..} roomId = do
       hasSnapshot <- doesFileExist path
       board <- if hasSnapshot
         then either error id <$> J.eitherDecodeFileStrict path
-        else generateBoard library rng 2.0
+        else generateBoard library rng 2.0 mempty
       v <- newTVarIO $ RoomState
         { _roomPlayers = mempty
         , _roomBoard = board
