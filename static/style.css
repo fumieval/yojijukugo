@@ -1,21 +1,53 @@
+body {
+  font-family: serif;
+  text-align: center;
+}
+ul {
+  text-align: left;
+}
 #app {
   margin: 2em auto 0em auto;
-  width: 800px;
-  font-family: serif;
+  width: 900px;
 }
+
 #table {
-  width: 300px;
   font-size: 2em;
-  font-family: serif;
   display: flex;
   flex-wrap: wrap;
 }
+
 #message {
   width: 100%;
+  animation: 3s ease-out slide;
+  font-size: 5em;
+  text-align: center;
 }
+
+@keyframes slide {
+  from { letter-spacing: -1em; color: transparent; }
+  to   { letter-spacing: 5em; color: black; }
+}
+
 #columns {
   width: 100%;
   display: flex;
+}
+
+@media (width >= 900px)
+{
+  #table {
+    width: 600px;
+  }
+  .spacer {
+    margin-right: 30px !important;
+  }
+}
+
+@media (width < 900px)
+{
+  #table {
+    width: 300px;
+  }
 }
 .cell {
   width: 60px;
@@ -47,7 +79,6 @@
   height: 2em;
   background-color: #eeeeee;
   margin: 4px;
-  width: 20em;
   border-style: solid;
   border-width: 4px;
   display: flex;

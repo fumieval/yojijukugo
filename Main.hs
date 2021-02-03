@@ -22,6 +22,7 @@ import qualified Data.Text.Encoding as T
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WS
 import qualified Network.WebSockets as WS
+import qualified Data.Vector as V
 import RIO hiding ((^.), (%~), (.~), lens)
 import System.Environment (getArgs)
 import Control.Monad.Writer
@@ -118,6 +119,11 @@ broadcast msg = do
     $ \conn -> liftIO (WS.sendTextData conn (J.encode msg))
     `catch` \(_ :: SomeException) -> pure ()
 
+defaultName :: Int -> Text
+defaultName i = T.pack $ "無名　" ++ [stems V.! mod i 10, branches V.! mod i 12] where
+  stems = V.fromList "甲乙丙丁戊己庚辛壬癸"
+  branches = V.fromList "子丑寅卯辰巳午未申酉戌亥"
+
 withPlayer :: (PlayerId -> SessionM a) -> SessionM a
 withPlayer cont = bracket
   (do
@@ -127,7 +133,7 @@ withPlayer cont = bracket
     result <- atomically $ do
       room <- readTVar vRoom
       let i = _roomFreshPlayerId room
-      let player = Player (T.pack $ show i) (palette Prelude.!! mod i 12)
+      let player = Player (defaultName i) (palette Prelude.!! mod i 12)
       writeTVar vRoom
         $ roomPlayers . at i ?~ player
         $ roomPlayerConn . at i ?~ conn
@@ -195,7 +201,7 @@ updateBoard Session{..} playerId board = do
           threadDelay $ 3 * 1000000
           broadcast $ PutStatus ""
           recreateBoard
-      broadcast $ PutStatus "次の問題へ進みます……"
+      broadcast $ PutStatus "次章突入"
 
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do

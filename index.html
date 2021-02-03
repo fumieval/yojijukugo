@@ -1,7 +1,7 @@
 <html>
   <head>
     <meta charset=utf-8>
-    <title>Coop四字熟語パズル</title>
+    <title>四字熟語電脳遊戯</title>
     <link rel="stylesheet" href="/static/style.css">
     <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
     <!-- CDNJS :: Sortable (https://cdnjs.com/) -->
@@ -9,8 +9,8 @@
   </head>
   <body>
     <div id="app">
+      <h2 id="difficulty">第{{ difficulty }}層</h2>
       <div id="message" v-if='server_message != ""'>{{ server_message }}</div>
-      <div id="difficulty">第{{ difficulty }}層</div>
       <div id="columns">
         <transition-group id="table" tag="div" name="swap">
           <div scope="row"
@@ -21,7 +21,8 @@
             v-bind:style="index in styles ? styles[index] : null"
             v-on:click="click_char"
             v-bind:class="{ selected: !(selected === null) && selected == index || index in touching
-              , finished: char.finished }">
+              , finished: char.finished
+              , spacer: index % 8 == 3 }">
             {{ char.c }}
           </div>
         </transition-group>
@@ -29,7 +30,7 @@
           <li v-for="(player, name) in players"
             v-bind:style='{ borderColor: player.color }'
             class="player">
-            <input class="name" v-if="player.id == my_id.toString()" type="text" placeholder="Your name" v-model="my_name">
+            <input class="name" v-if="player.id == my_id.toString()" type="text" placeholder="名前入力" v-model="my_name">
             <div v-else class="name">{{ name }}</div>
             <div class="score">
               {{ name in scoreboard ? scoreboard[name] : 0 }}
@@ -44,13 +45,29 @@
         </ul>
       </div>
       音量調節 <input type="range" min="0" max="10" v-model="volume">
+      <div>
+        <h2>更新記録</h2>
+        <ul>
+          <li>二月三日 酉の刻 - 配置を二列にしました</li>
+          <li>二月三日 酉の刻 - 詰みになりうる問題が生成されないようになりました</li>
+          <li>二月三日 酉の刻 - 点数が保存されるようになりました</li>
+          <li>二月三日 酉の刻 - 選手が触れていた場所の枠線が消えない不具合を修正しました</li>
+        </ul>
+      </div>
+      <footer>
+        <!-- Place this tag where you want the button to render. -->
+<a class="github-button" href="https://github.com/rampaging-fridge/yojijukugo" data-icon="octicon-star" aria-label="Star rampaging-fridge/yojijukugo on GitHub">星</a>
+      </footer>
     </div>
+    <!-- Place this tag in your head or just before your close body tag. -->
+    <script async defer src="https://buttons.github.io/buttons.js"></script>
     <audio src="/static/cymbal.mp3" id="a-cymbal"></audio>
     <audio src="/static/dora.mp3" id="a-dora"></audio>
     <audio src="/static/rei.mp3" id="a-rei"></audio>
     <audio src="/static/bell.mp3" id="a-bell"></audio>
     <audio src="/static/hihat.mp3" id="a-hihat"></audio>
     <audio src="/static/reverse-hihat.mp3" id="a-reverse-hihat"></audio>
+
     <script>
       const draggable = window['vuedraggable'];
       let scheme = location.protocol === 'https:' ? "wss://" : "ws://";
@@ -131,6 +148,7 @@
         if ("PutBoard" in obj){
           app.scoreboard = obj.PutBoard.scoreboard;
           app.difficulty = obj.PutBoard.boardDifficulty;
+          app.styles = {};
           let jukugos = obj.PutBoard.jukugos;
           app.board = jukugos.flatMap(function (jukugo){
             let result = jukugo[1].content;
