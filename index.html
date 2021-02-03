@@ -79,9 +79,7 @@
     </style>
     <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
     <!-- CDNJS :: Sortable (https://cdnjs.com/) -->
-    <script src="//cdn.jsdelivr.net/npm/sortablejs@1.8.4/Sortable.min.js"></script>
-    <!-- CDNJS :: Vue.Draggable (https://cdnjs.com/) -->
-    <script src="//cdnjs.cloudflare.com/ajax/libs/Vue.Draggable/2.20.0/vuedraggable.umd.min.js"></script>
+    <script src="https://unpkg.com/vue-cookies@1.7.4/vue-cookies.js"></script>
   </head>
   <body>
     <div id="app">
@@ -105,7 +103,7 @@
           <li v-for="(player, index) in players"
             v-bind:style='{ borderColor: player.color }'
             class="player">
-            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-on:change="update_name" :value="player.name">
+            <input class="name" v-if="index == my_id.toString()" type="text" placeholder="Your name" v-model="my_name">
             <div v-else class="name">{{ player.name }}</div>
             <div class="score">
               {{ player.score }}
@@ -113,7 +111,7 @@
           </li>
         </ul>
       </div>
-      音量調節 <input type="range" min="0" max="10" v-on:change="set_volume">
+      音量調節 <input type="range" min="0" max="10" v-model="volume">
     </div>
     <audio src="/static/cymbal.mp3" id="a-cymbal"></audio>
     <audio src="/static/dora.mp3" id="a-dora"></audio>
@@ -131,22 +129,28 @@
           board: {},
           selected: null,
           my_id: null,
+          my_name: null,
           me: null,
           styles: {},
           players: {},
           touching: {},
           difficulty: 0,
           server_message: "",
+          volume: 5,
+        },
+        watch: {
+          my_name: function(val, oldVal) {
+            $cookies.set("player_name", val);
+            ws.send(JSON.stringify({SetPlayerName: val}));
+          },
+          volume: function(val, oldVal) {
+            for (elem of document.getElementsByTagName("audio")){
+              elem.volume = val / 10;
+            };
+            $cookies.set("volume", val);
+          }
         },
         methods: {
-          set_volume: function(event){
-            for (elem of document.getElementsByTagName("audio")){
-              elem.volume = event.target.value / 10;
-            }
-          },
-          update_name: function(event) {
-            ws.send(JSON.stringify({SetPlayerName: event.target.value}));
-          },
           click_char: function(event) {
             let target = event.target.dataset.colId;
             if (this.board[target].finished){
@@ -184,6 +188,8 @@
         },
         components: { draggable },
       });
+      app.my_name = $cookies.get("player_name");
+      app.volume = $cookies.get("volume");
       ws.addEventListener('message', event => {
         let obj = JSON.parse(event.data);
         if (obj === null) return;
