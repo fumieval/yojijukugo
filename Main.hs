@@ -164,7 +164,7 @@ recreateBoard = do
   atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board }
   roomId <- asks sessionRoomId
   saveSnapshot roomId board
-  broadcast $ PutBoard board
+  broadcast $ PutBoard $ board & answers .~ mempty
 
 broadcastPlayers :: SessionM ()
 broadcastPlayers = do
@@ -200,7 +200,7 @@ updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
   room <- readTVar sessionRoom
   let name = room ^. roomPlayers . ix (unPlayerId playerId) . playerName
-  let (board', done) = runWriter $ checkFinish (library sessionServer) board
+  let (board', done) = runWriter $ checkFinish board
   let board'' = board' & scoreboard %~ Map.insertWith (+) name (length done)
   writeTVar sessionRoom $ room & roomBoard .~ board''
   pure $ do
@@ -235,7 +235,7 @@ wsApp sessionServer pending = do
   let session = Session{..}
 
   runRIO session $ withPlayer $ \playerId -> do
-    readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
+    readTVarIO sessionRoom >>= \room -> send $ PutBoard $ _roomBoard room & answers .~ mempty
     checkComplete
 
     fix $ \self -> do
