@@ -15,11 +15,9 @@ import Web.Scotty
 import qualified Data.Aeson as J
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C8
-import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.Vector as V
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WS
 import qualified Network.WebSockets as WS
@@ -86,8 +84,7 @@ makeLenses ''RoomState
 
 data Server = Server
   { rooms :: TVar (IM.IntMap (TVar RoomState))
-  , libraryS :: HS.HashSet (V.Vector Char)
-  , libraryV :: V.Vector (V.Vector Char)
+  , library :: Library
   , logger :: LogFunc
   }
 instance HasLogFunc Server where
@@ -149,7 +146,7 @@ recreateBoard = do
   room0 <- readTVarIO vRoom
   do
     let nextLevel = _roomLevel room0 + 1.0
-    board <- liftIO $ generateBoard (libraryV server) (_roomRNG room0) $ numberOfJukugos nextLevel
+    board <- liftIO $ generateBoard (library server) (_roomRNG room0) $ numberOfJukugos nextLevel
     atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLevel = nextLevel }
     broadcast $ PutBoard nextLevel board
 
@@ -194,7 +191,7 @@ wsApp sessionServer pending = do
                     else case swap p q $ _roomBoard room of
                       Nothing -> pure mempty -- ERROR
                       Just board -> do
-                        let (board', done) = runWriter $ checkFinish (libraryS sessionServer) board
+                        let (board', done) = runWriter $ checkFinish (library sessionServer) board
                         let room' = room
                               & roomBoard .~ board'
                               & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
@@ -226,7 +223,7 @@ acquireRoom Server{..} roomId = do
       -- create a room
       let initLevel = 2.0
       rng <- newAtomicGenM $ mkStdGen roomId
-      board <- generateBoard libraryV rng $ numberOfJukugos initLevel
+      board <- generateBoard library rng $ numberOfJukugos initLevel
       v <- newTVarIO $ RoomState
         { _roomPlayers = mempty
         , _roomBoard = board
@@ -239,20 +236,20 @@ acquireRoom Server{..} roomId = do
       pure v
     Just room -> pure room
 
-newServer :: FilePath -> LogFunc -> IO Server
-newServer path logger = do
+newServer :: [FilePath] -> LogFunc -> IO Server
+newServer paths logger = do
   rooms <- newTVarIO mempty
-  libraryV <- V.fromList . map (V.fromList . T.unpack) . T.lines . T.decodeUtf8 <$> B.readFile path
-  let libraryS = HS.fromList $ V.toList libraryV
+  dataset <- forM paths $ \path -> T.lines . T.decodeUtf8 <$> B.readFile path
+  let library = newLibrary dataset
   pure Server{..}
 
 main :: IO ()
 main = do
-  path : _ <- getArgs
+  paths <- getArgs
   logOptions' <- logOptionsHandle stderr True
   let logOptions = setLogUseTime True logOptions'
   withLogFunc logOptions $ \lf -> do
-    server <- newServer path lf
+    server <- newServer paths lf
     app <- scottyApp $ do
       get "/game/:id" $ 
         file "index.html"
