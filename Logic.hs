@@ -103,12 +103,12 @@ sampleIntSet gen s = case IS.splitRoot s of
   _ -> error "FIXME: splitRoot"
 
 difficultyWeights :: V.Vector Int
-difficultyWeights = V.postscanl' (+) 0 $ V.fromList [4,2,1]
+difficultyWeights = V.postscanl' (+) 0 $ V.fromList [8,4,2,1]
 
-sampleDifficulty :: RandomGenM g r m => g -> m Int
-sampleDifficulty gen = do
-    t <- randomRM (0, V.last difficultyWeights) gen
-    pure $! maybe 0 id $ V.findIndex (>=t) difficultyWeights
+sampleDifficulty :: RandomGenM g r m => V.Vector Int -> g -> m Int
+sampleDifficulty weights gen = do
+    t <- randomRM (0, V.last weights) gen
+    pure $! maybe 0 id $ V.findIndex (>=t) weights
 
 populate
   :: Library
@@ -119,7 +119,7 @@ populate Library{..} gen count = go (IS.fromList [0..V.length libraryV - 1]) IS.
   go _ _ board (-1) = pure board
   go available _ board _ | IS.null available = pure board
   go available pool board counter = do
-    difficulty <- sampleDifficulty gen
+    difficulty <- sampleDifficulty (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) gen
     let filterL = snd $ IS.split (libraryDifficulty V.! difficulty) available
     let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty) filterL
     if IS.null filterR
