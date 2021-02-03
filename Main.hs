@@ -26,8 +26,12 @@ import System.Environment (getArgs)
 import Control.Monad.Writer
 import qualified Network.Wai.Middleware.Static as W
 import System.Random.Stateful
+import RIO.FilePath ((</>))
+import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 
 data ClientMessage = Touch Int
+  | Untouch Int
   | Swap (Int, Int)
   | SetPlayerName String
   | Heartbeat
@@ -61,10 +65,11 @@ data Player = Player
   deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
 makeLenses ''Player
 
-data ServerMessage = PutBoard Double Board
+data ServerMessage = PutBoard Board
   | PutPlayers (IM.IntMap Player)
   | PutYou (PlayerId, Player)
   | AckTouch PlayerId Int
+  | AckUntouch PlayerId Int
   | AckSwap PlayerId Int Int
   | AckDone Int
   | PutStatus Text
@@ -77,7 +82,6 @@ data RoomState = RoomState
   , _roomBoard :: Board
   , _roomPlayerConn :: IM.IntMap WS.Connection
   , _roomFreshPlayerId :: Int
-  , _roomLevel :: Double
   , _roomRNG :: RNG
   } deriving Generic
 makeLenses ''RoomState
@@ -91,7 +95,8 @@ instance HasLogFunc Server where
   logFuncL = lens logger $ \x f -> x { logger = f }
 
 data Session = Session
-  { sessionRoom :: TVar RoomState
+  { sessionRoomId :: Int
+  , sessionRoom :: TVar RoomState
   , sessionConn :: WS.Connection
   , sessionServer :: Server
   }
@@ -144,16 +149,29 @@ recreateBoard = do
   vRoom <- asks sessionRoom
   server <- asks sessionServer
   room0 <- readTVarIO vRoom
-  do
-    let nextLevel = _roomLevel room0 + 1.0
-    board <- liftIO $ generateBoard (library server) (_roomRNG room0) $ numberOfJukugos nextLevel
-    atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLevel = nextLevel }
-    broadcast $ PutBoard nextLevel board
+
+  let nextLevel = _boardDifficulty (_roomBoard room0) + 1.0
+  board <- liftIO $ generateBoard (library server) (_roomRNG room0) nextLevel
+  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board }
+  broadcast $ PutBoard board
 
 broadcastPlayers :: SessionM ()
 broadcastPlayers = do
   room <- asks sessionRoom >>= readTVarIO
   broadcast $ PutPlayers $ _roomPlayers room
+
+latestSnapshotPath :: Int -> FilePath
+latestSnapshotPath roomId = "snapshots" </> show roomId </> "latest.json"
+
+saveSnapshot :: Int -> Board -> SessionM ()
+saveSnapshot roomId board = do
+  now <- liftIO getCurrentTime
+  let prefix = "snapshots" </> show roomId
+  createDirectoryIfMissing True prefix
+  let path = prefix </> formatTime defaultTimeLocale "%Y%m%dT%H%M%S.json" now
+  liftIO $ J.encodeFile path board
+  logInfo $ "Saved a snapshot to " <> display (T.pack path)
+  copyFile path (latestSnapshotPath roomId)
 
 updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
@@ -165,11 +183,14 @@ updateBoard Session{..} playerId board = do
   writeTVar sessionRoom room'
   pure $ do
     forM_ done $ broadcast . AckDone
-    unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
+    unless (null done) $ do
+      broadcast $ PutPlayers $ _roomPlayers room'
+      _ <- forkIO $ saveSnapshot sessionRoomId board'
+      pure ()
     when (all _finished (_jukugos board')) $ do
       broadcast LevelFinished
       _ <- forkIO $ do
-          threadDelay $ 5 * 1000000
+          threadDelay $ 3 * 1000000
           broadcast $ PutStatus ""
           recreateBoard
       broadcast $ PutStatus "次の問題へ進みます……"
@@ -178,14 +199,14 @@ wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
   sessionConn <- WS.acceptRequest pending
   _hello <- WS.receive sessionConn
-  roomId <- case filter (not . C8.null) $ C8.split '/' $ WS.requestPath $ WS.pendingRequest pending of
+  sessionRoomId <- case filter (not . C8.null) $ C8.split '/' $ WS.requestPath $ WS.pendingRequest pending of
     ["game", str] | Just i <- readMaybe (C8.unpack str) -> pure i
     s -> error $ "Failed to parse roomId: " ++ show s
-  sessionRoom <- acquireRoom sessionServer roomId
+  sessionRoom <- acquireRoom sessionServer sessionRoomId
   let session = Session{..}
 
   runRIO session $ withPlayer $ \playerId -> do
-    readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomLevel room) (_roomBoard room)
+    readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
 
     fix $ \self -> do
       liftIO (WS.receive sessionConn) >>= \case
@@ -199,6 +220,7 @@ wsApp sessionServer pending = do
                   modifyTVar' sessionRoom $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
                 broadcastPlayers
               Touch i -> broadcast $ AckTouch playerId i
+              Untouch i -> broadcast $ AckUntouch playerId i
               Swap (i, j) -> join $ atomically $ do
                 let p = divMod i 4
                 let q = divMod j 4
@@ -212,24 +234,23 @@ wsApp sessionServer pending = do
         _ -> self
       pure ()
 
-numberOfJukugos :: Double -> Int
-numberOfJukugos = floor . (1.5**)
-
 acquireRoom :: Server -> Int -> IO (TVar RoomState)
 acquireRoom Server{..} roomId = do
   m <- readTVarIO rooms
   case IM.lookup roomId m of
     Nothing -> do
       -- create a room
-      let initLevel = 2.0
       rng <- newAtomicGenM $ mkStdGen roomId
-      board <- generateBoard library rng $ numberOfJukugos initLevel
+      let path = latestSnapshotPath roomId
+      hasSnapshot <- doesFileExist path
+      board <- if hasSnapshot
+        then either error id <$> J.eitherDecodeFileStrict path
+        else generateBoard library rng 2.0
       v <- newTVarIO $ RoomState
         { _roomPlayers = mempty
         , _roomBoard = board
         , _roomPlayerConn = mempty
         , _roomFreshPlayerId = 0
-        , _roomLevel = initLevel
         , _roomRNG = rng
         }
       atomically $ modifyTVar' rooms $ IM.insert roomId v

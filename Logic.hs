@@ -29,6 +29,7 @@ makeLenses ''Jukugo
 
 data Board = Board
   { _jukugos :: IM.IntMap Jukugo
+  , _boardDifficulty :: Double
   } deriving (Generic, Show)
   deriving (FromJSON, ToJSON) via Prefixed "_" Board
 makeLenses ''Board
@@ -68,11 +69,13 @@ randomise gen board = do
 
 generateBoard
   :: Library -- ^ all list of jukugos
-  -> RNG -> Int -- ^ number of jukugos
+  -> RNG
+  -> Double
   -> IO Board
-generateBoard library gen population = do
+generateBoard library gen difficulty = do
+  let population = floor $ 1.5 ** difficulty
   jukugos' <- populate library gen population
-  foldM (\b _ -> randomise gen b) (Board jukugos') [0..population * population * 4]
+  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty) [0..population * population * 4]
 
 type CharSet = IS.IntSet
 

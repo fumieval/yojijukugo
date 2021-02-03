@@ -118,8 +118,6 @@
         },
         components: { draggable },
       });
-      app.my_name = $cookies.get("player_name");
-      app.volume = $cookies.get("volume");
       ws.addEventListener('message', event => {
         let obj = JSON.parse(event.data);
         if (obj === null) return;
@@ -195,6 +193,9 @@
       ws.addEventListener('open', event => {
         console.log("connection established");
         ws.send("hello");
+
+        app.my_name = $cookies.get("player_name");
+        app.volume = $cookies.get("volume");
 
         function heartbeat(){
           ws.send(JSON.stringify({Heartbeat: []}));
