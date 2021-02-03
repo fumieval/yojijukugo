@@ -86,6 +86,7 @@
           me: null,
           styles: {},
           players: {},
+          players_by_id: {},
           touching: {},
           difficulty: 0,
           server_message: "",
@@ -172,6 +173,10 @@
             result[elem[1].name] = elem[1];
           }
           app.players = result;
+
+          for (let elem of obj.PutPlayers){
+            Vue.set(app.players_by_id, elem[0], elem[1]);
+          }
         } else if ("PutScoreboard" in obj) {
           app.scoreboard = obj.PutScoreboard;
         } else if ("PutYou" in obj) {
@@ -186,7 +191,7 @@
         } else if ("AckTouch" in obj) {
           let msg = obj.AckTouch;
           if (app.my_id === msg[0]) return;
-          let style = { outlineColor: app.players[msg[0]].color };
+          let style = { outlineColor: app.players_by_id[msg[0]].color };
           Vue.set(app.styles, msg[1], style);
           Vue.set(app.touching, msg[1], msg[0]);
         } else if ("AckUntouch" in obj) {
@@ -201,7 +206,7 @@
           let orig = app.board[msg[1]];
           Vue.set(app.board, msg[1], app.board[msg[2]]);
           Vue.set(app.board, msg[2], orig);
-          let style = { outlineColor: app.players[msg[0]].color };
+          let style = { outlineColor: app.players_by_id[msg[0]].color };
           Vue.set(app.styles, msg[1], style);
           Vue.set(app.styles, msg[2], style);
           app.$delete(app.touching, msg[1]);
