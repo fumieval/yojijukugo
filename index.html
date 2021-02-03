@@ -100,6 +100,7 @@
                 let sound = document.getElementById("a-reverse-hihat");
                 sound.currentTime = 0;
                 sound.play();
+                ws.send(JSON.stringify({Untouch: parseInt(target)}));
               }
               else {
                 Vue.set(app.styles, target, style);
@@ -123,8 +124,8 @@
         let obj = JSON.parse(event.data);
         if (obj === null) return;
         if ("PutBoard" in obj){
-          app.difficulty = obj.PutBoard[0];
-          let jukugos = obj.PutBoard[1].jukugos;
+          app.difficulty = obj.PutBoard.difficulty;
+          let jukugos = obj.PutBoard.jukugos;
           app.board = jukugos.flatMap(function (jukugo){
             let result = jukugo[1].content;
             if (jukugo[1].finished) {
@@ -156,7 +157,14 @@
           if (app.my_id === msg[0]) return;
           let style = { outlineColor: app.players[msg[0]].color };
           Vue.set(app.styles, msg[1], style);
-          Vue.set(app.touching, msg[1], null);
+          Vue.set(app.touching, msg[1], msg[0]);
+        } else if ("AckUntouch" in obj) {
+          let msg = obj.AckUntouch;
+          let sender = msg[0];
+          if (app.my_id === sender || !(msg[1] in app.touching)) return;
+          if (sender == app.touching[msg[1]]) {
+            app.$delete(app.touching, msg[1]);
+          }
         } else if ("AckSwap" in obj) {
           let msg = obj.AckSwap;
           let orig = app.board[msg[1]];
