@@ -92,12 +92,11 @@ ul {
   border: none;
 }
 .name {
-  width: 50%;
   padding: 6px;
 }
 .score {
   margin-left: 4px;
-  width: 50%;
+  width: 3em;
   margin-right: none;
   text-align: right;
   padding: 6px;

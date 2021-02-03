@@ -70,7 +70,7 @@
     <audio src="/static/bell.mp3" id="a-bell"></audio>
     <audio src="/static/hihat.mp3" id="a-hihat"></audio>
     <audio src="/static/reverse-hihat.mp3" id="a-reverse-hihat"></audio>
-
+    <audio src="/static/somebody-scream.mp3" id="a-somebody-scream"></audio>
     <script>
       const draggable = window['vuedraggable'];
       let scheme = location.protocol === 'https:' ? "wss://" : "ws://";
@@ -220,9 +220,16 @@
           for (let i=row*4; i < row*4+4; i++){
             Vue.set(app.board[i], "finished", true);
           }
-          let sound = document.getElementById("a-cymbal");
-          sound.currentTime = 0;
-          sound.play();
+          if (app.board[row*4].c == '三' && app.board[row*4+1].c == '倍' && app.board[row*4+2].c == '氷' && app.board[row*4+3].c == '菓'){
+            let sound = document.getElementById("a-somebody-scream");
+            sound.currentTime = 0;
+            sound.play();
+          } else {
+            let sound = document.getElementById("a-cymbal");
+            sound.currentTime = 0;
+            sound.play();
+          }
+
         } else {
           console.log(obj);
         }
