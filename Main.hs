@@ -30,7 +30,7 @@ import qualified Network.Wai.Middleware.Static as W
 import System.Random.Stateful
 import RIO.FilePath ((</>))
 import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
-import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
 
 data ClientMessage = Touch Int
   | Untouch Int
@@ -85,6 +85,7 @@ data RoomState = RoomState
   , _roomPlayerConn :: IM.IntMap WS.Connection
   , _roomFreshPlayerId :: Int
   , _roomRNG :: RNG
+  , _roomLastActivity :: UTCTime
   } deriving Generic
 makeLenses ''RoomState
 
@@ -129,7 +130,7 @@ withPlayer cont = bracket
   (do
     conn <- asks sessionConn
     vRoom <- asks sessionRoom
-
+    now <- liftIO getCurrentTime
     result <- atomically $ do
       room <- readTVar vRoom
       let i = _roomFreshPlayerId room
@@ -138,6 +139,7 @@ withPlayer cont = bracket
         $ roomPlayers . at i ?~ player
         $ roomPlayerConn . at i ?~ conn
         $ roomFreshPlayerId +~ 1
+        $ roomLastActivity .~ now
         $ room
       pure (PlayerId i, player)
     send $ PutYou result
@@ -160,6 +162,8 @@ recreateBoard = do
   let nextLevel = _boardDifficulty (_roomBoard room0) + 1.0
   board <- liftIO $ generateBoard (library server) (_roomRNG room0) nextLevel (_scoreboard $ _roomBoard room0)
   atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board }
+  roomId <- asks sessionRoomId
+  saveSnapshot roomId board
   broadcast $ PutBoard board
 
 broadcastPlayers :: SessionM ()
@@ -170,7 +174,7 @@ broadcastPlayers = do
 latestSnapshotPath :: Int -> FilePath
 latestSnapshotPath roomId = "snapshots" </> show roomId </> "latest.json"
 
-saveSnapshot :: Int -> Board -> SessionM ()
+saveSnapshot :: HasLogFunc r => Int -> Board -> RIO r ()
 saveSnapshot roomId board = do
   now <- liftIO getCurrentTime
   let prefix = "snapshots" </> show roomId
@@ -180,28 +184,45 @@ saveSnapshot roomId board = do
   logInfo $ "Saved a snapshot to " <> display (T.pack path)
   copyFile path (latestSnapshotPath roomId)
 
+closeInactiveRooms :: RIO Server ()
+closeInactiveRooms = do
+  Server{..} <- ask
+  m <- readTVarIO rooms
+  now <- liftIO getCurrentTime
+  forM_ (IM.toList m) $ \(i, v) -> do
+    room <- readTVarIO v
+    when (null (_roomPlayers room) && diffUTCTime now (_roomLastActivity room) > 60) $ do
+      saveSnapshot i (_roomBoard room)
+      logInfo $ "Closed room " <> display i <> " due to inactivity" 
+      atomically $ modifyTVar' rooms $ IM.delete i
+
 updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
   room <- readTVar sessionRoom
   let name = room ^. roomPlayers . ix (unPlayerId playerId) . playerName
   let (board', done) = runWriter $ checkFinish (library sessionServer) board
   let board'' = board' & scoreboard %~ Map.insertWith (+) name (length done)
-  let room' = room
-        & roomBoard .~ board''
-  writeTVar sessionRoom room'
+  writeTVar sessionRoom $ room & roomBoard .~ board''
   pure $ do
+    now <- liftIO getCurrentTime
+    atomically $ modifyTVar' sessionRoom $ roomLastActivity .~ now
     forM_ done $ broadcast . AckDone
     unless (null done) $ do
       broadcast $ PutScoreboard $ board'' ^. scoreboard
       _ <- forkIO $ saveSnapshot sessionRoomId board'
-      pure ()
-    when (all _finished (_jukugos board')) $ do
-      broadcast LevelFinished
-      _ <- forkIO $ do
-          threadDelay $ 3 * 1000000
-          broadcast $ PutStatus ""
-          recreateBoard
-      broadcast $ PutStatus "次章突入"
+      checkComplete
+
+checkComplete :: SessionM ()
+checkComplete = do
+  Session{..} <- ask
+  board <- _roomBoard <$> readTVarIO sessionRoom
+  when (all _finished (_jukugos board)) $ do
+    broadcast LevelFinished
+    _ <- forkIO $ do
+        threadDelay $ 3 * 1000000
+        broadcast $ PutStatus ""
+        recreateBoard
+    broadcast $ PutStatus "次章突入"
 
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
@@ -215,6 +236,7 @@ wsApp sessionServer pending = do
 
   runRIO session $ withPlayer $ \playerId -> do
     readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
+    checkComplete
 
     fix $ \self -> do
       liftIO (WS.receive sessionConn) >>= \case
@@ -251,6 +273,7 @@ acquireRoom Server{..} roomId = do
       rng <- newAtomicGenM $ mkStdGen roomId
       let path = latestSnapshotPath roomId
       hasSnapshot <- doesFileExist path
+      now <- getCurrentTime
       board <- if hasSnapshot
         then either error id <$> J.eitherDecodeFileStrict path
         else generateBoard library rng 2.0 mempty
@@ -260,6 +283,7 @@ acquireRoom Server{..} roomId = do
         , _roomPlayerConn = mempty
         , _roomFreshPlayerId = 0
         , _roomRNG = rng
+        , _roomLastActivity = now
         }
       atomically $ modifyTVar' rooms $ IM.insert roomId v
       pure v
@@ -283,6 +307,9 @@ main = do
       get "/game/:id" $ 
         file "index.html"
     runRIO lf $ logInfo "Started the server"
+    _ <- forkIO $ forever $ do
+      threadDelay $ 10 * 1000000
+      runRIO server closeInactiveRooms 
     Warp.run 4444
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app

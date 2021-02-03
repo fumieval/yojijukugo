@@ -33,6 +33,10 @@ ul {
   display: flex;
 }
 
+#error {
+  color: red;
+}
+
 @media (width >= 900px)
 {
   #table {

@@ -54,6 +54,9 @@
           <li>二月三日 酉の刻 - 選手が触れていた場所の枠線が消えない不具合を修正しました</li>
         </ul>
       </div>
+      <div v-if="error !== null" id="error">
+        {{ error }}
+      </div>
       <footer>
         <!-- Place this tag where you want the button to render. -->
 <a class="github-button" href="https://github.com/rampaging-fridge/yojijukugo" data-icon="octicon-star" aria-label="Star rampaging-fridge/yojijukugo on GitHub">星</a>
@@ -87,6 +90,7 @@
           difficulty: 0,
           server_message: "",
           volume: 5,
+          error: null,
         },
         watch: {
           my_name: function(val, oldVal) {
@@ -220,7 +224,6 @@
       });
 
       ws.addEventListener('open', event => {
-        console.log("connection established");
         ws.send("hello");
 
         app.my_name = $cookies.get("player_name");
@@ -233,7 +236,7 @@
         heartbeat();
 
       });
-      ws.onerror = event => console.log(event);
+      ws.onerror = event => { app.error = event.message };
       
     </script>
     
