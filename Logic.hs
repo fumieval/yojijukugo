@@ -12,7 +12,6 @@ import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as U
 import qualified Data.Text as T
 
 data Character = Character
@@ -39,6 +38,7 @@ type Position = (Int, Int)
 swap :: Position -> Position -> Board -> Maybe Board
 swap (r0, c0) (r1, c1)
   | r0 == r1 = jukugos . ix r0 $ \jukugo -> do
+      guard $ not $ _finished jukugo
       a <- jukugo ^? content . ix c0
       b <- jukugo ^? content . ix c1
       pure
@@ -47,6 +47,8 @@ swap (r0, c0) (r1, c1)
           $ jukugo
   | otherwise = jukugos . lensProduct (at r0) (at r1) $ \case
     (Just alpha, Just bravo) -> do
+      guard $ not $ _finished alpha
+      guard $ not $ _finished bravo
       a <- alpha ^? content . ix c0
       b <- bravo ^? content . ix c1
       let alpha' = alpha & content . ix c0 .~ b

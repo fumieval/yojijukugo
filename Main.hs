@@ -155,6 +155,25 @@ broadcastPlayers = do
   room <- asks sessionRoom >>= readTVarIO
   broadcast $ PutPlayers $ _roomPlayers room
 
+updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
+updateBoard Session{..} playerId board = do
+  room <- readTVar sessionRoom
+  let (board', done) = runWriter $ checkFinish (library sessionServer) board
+  let room' = room
+        & roomBoard .~ board'
+        & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
+  writeTVar sessionRoom room'
+  pure $ do
+    forM_ done $ broadcast . AckDone
+    unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
+    when (all _finished (_jukugos board')) $ do
+      broadcast LevelFinished
+      _ <- forkIO $ do
+          threadDelay $ 5 * 1000000
+          broadcast $ PutStatus ""
+          recreateBoard
+      broadcast $ PutStatus "次の問題へ進みます……"
+
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
   sessionConn <- WS.acceptRequest pending
@@ -163,8 +182,9 @@ wsApp sessionServer pending = do
     ["game", str] | Just i <- readMaybe (C8.unpack str) -> pure i
     s -> error $ "Failed to parse roomId: " ++ show s
   sessionRoom <- acquireRoom sessionServer roomId
+  let session = Session{..}
 
-  runRIO Session{..} $ withPlayer $ \playerId -> do
+  runRIO session $ withPlayer $ \playerId -> do
     readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomLevel room) (_roomBoard room)
 
     fix $ \self -> do
@@ -179,34 +199,14 @@ wsApp sessionServer pending = do
                   modifyTVar' sessionRoom $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
                 broadcastPlayers
               Touch i -> broadcast $ AckTouch playerId i
-              Swap (i, j) -> do
-                join $ atomically $ do
-                  let p = divMod i 4
-                  let q = divMod j 4
-                  room <- readTVar sessionRoom
-
-                  if orOf (jukugos . ix (fst p) . finished) (_roomBoard room)
-                    || orOf (jukugos . ix (fst q) . finished) (_roomBoard room)
-                    then pure mempty -- $ send $ AckSwap playerId j i
-                    else case swap p q $ _roomBoard room of
-                      Nothing -> pure mempty -- ERROR
-                      Just board -> do
-                        let (board', done) = runWriter $ checkFinish (library sessionServer) board
-                        let room' = room
-                              & roomBoard .~ board'
-                              & roomPlayers . ix (unPlayerId playerId) . playerScore +~ length done
-                        writeTVar sessionRoom room'
-                        pure $ do
-                          broadcast $ AckSwap playerId i j
-                          forM_ done $ broadcast . AckDone
-                          unless (null done) $ broadcast $ PutPlayers $ _roomPlayers room'
-                          when (all _finished (_jukugos board')) $ do
-                            broadcast LevelFinished
-                            _ <- forkIO $ do
-                                threadDelay $ 5 * 1000000
-                                broadcast $ PutStatus ""
-                                recreateBoard
-                            broadcast $ PutStatus "次の問題へ進みます……"
+              Swap (i, j) -> join $ atomically $ do
+                let p = divMod i 4
+                let q = divMod j 4
+                room <- readTVar sessionRoom
+                case swap p q $ _roomBoard room of
+                  Nothing -> pure mempty -- ERROR
+                  Just board -> (broadcast (AckSwap playerId i j)>>)
+                    <$> updateBoard session playerId board
           self
         WS.ControlMessage (WS.Close _ _) -> pure ()
         _ -> self
