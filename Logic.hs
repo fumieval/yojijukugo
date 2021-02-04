@@ -34,7 +34,6 @@ data Board = Board
   { _jukugos :: IM.IntMap Jukugo
   , _boardDifficulty :: Double
   , _scoreboard :: Scoreboard
-  , _answers :: HS.HashSet (V.Vector Char)
   } deriving (Generic, Show)
   deriving (FromJSON, ToJSON) via Prefixed "_" Board
 makeLenses ''Board
@@ -80,9 +79,8 @@ generateBoard
   -> IO Board
 generateBoard library gen difficulty scores = do
   let population = floor $ 1.5 ** difficulty
-  (answers_, jukugos') <- populate library gen population
-  let xs = HS.fromList $ (libraryV library V.!) <$> IS.toList answers_
-  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty scores xs) [0..population * population * 4]
+  jukugos' <- populate library gen population
+  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty scores) [0..population * population * 4]
 
 type CharSet = IS.IntSet
 
@@ -116,16 +114,16 @@ populate
   :: Library
   -> RNG
   -> Int
-  -> IO (IS.IntSet, IM.IntMap Jukugo)
-populate Library{..} gen count = go IS.empty (IS.fromList [0..V.length libraryV - 1]) IS.empty IM.empty count where
-  go accum available _ board (-1) = pure (accum, board)
-  go accum available _ board _ | IS.null available = pure (accum, board)
-  go accum available pool board counter = do
+  -> IO (IM.IntMap Jukugo)
+populate Library{..} gen count = go (IS.fromList [0..V.length libraryV - 1]) IS.empty IM.empty count where
+  go _ _ board (-1) = pure board
+  go available _ board _ | IS.null available = pure board
+  go available pool board counter = do
     difficulty <- sampleDifficulty (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) gen
     let filterL = snd $ IS.split (libraryDifficulty V.! difficulty) available
     let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty) filterL
     if IS.null filterR
-      then go accum available pool board (counter - 1)
+      then go available pool board (counter - 1)
       else do
         i <- sampleIntSet gen filterR
         let jukugo = libraryV V.! i
@@ -133,13 +131,14 @@ populate Library{..} gen count = go IS.empty (IS.fromList [0..V.length libraryV 
         let !pool' = pool `IS.union` cset
         let !available' = IS.filter (\j -> not $ all ((`IS.member` pool') . fromEnum) (libraryV V.! j)) available
         let !jukugo' = Jukugo False $ V.zipWith Character (V.enumFromTo (counter * 4) (counter * 4 + 3)) jukugo
-        go (IS.insert i accum) available' pool' (IM.insert counter jukugo' board) (counter - 1)
+        go available' pool' (IM.insert counter jukugo' board) (counter - 1)
 
-checkFinish :: Board
+checkFinish :: Library
+  -> Board
   -> Writer [Int] Board
-checkFinish board = do
+checkFinish library board = do
   jukugos' <- iforM (_jukugos board)
-    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap charC $ _content jukugo) (_answers board)
+    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap charC $ _content jukugo) (libraryS library)
       then do
         tell [i]
         pure jukugo { _finished = True }
@@ -147,7 +146,8 @@ checkFinish board = do
   pure board { _jukugos = jukugos' }
 
 data Library = Library
-  { libraryV :: V.Vector (V.Vector Char)
+  { libraryS :: HS.HashSet (V.Vector Char)
+  , libraryV :: V.Vector (V.Vector Char)
   , libraryDifficulty :: V.Vector Int
   }
 
@@ -155,5 +155,6 @@ newLibrary :: [[T.Text]] -> Library
 newLibrary dataset = Library{..} where
   vecs :: [V.Vector (V.Vector Char)]
   vecs = V.fromList . map (V.fromList . T.unpack) <$> dataset
+  libraryS = HS.fromList $ V.toList libraryV
   libraryV = V.concat vecs
   libraryDifficulty = V.fromList $ scanl (+) 0 $ map V.length vecs
