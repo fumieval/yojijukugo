@@ -13,12 +13,10 @@ import Deriving.Aeson.Stock
 import Logic
 import Web.Scotty
 import qualified Data.Aeson as J
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WS
 import qualified Network.WebSockets as WS
@@ -292,8 +290,7 @@ acquireRoom Server{..} roomId = do
 newServer :: [FilePath] -> LogFunc -> IO Server
 newServer paths logger = do
   rooms <- newTVarIO mempty
-  dataset <- forM paths $ \path -> T.lines . T.decodeUtf8 <$> B.readFile path
-  let library = newLibrary dataset
+  library <- newLibraryFromFiles paths
   pure Server{..}
 
 main :: IO ()
