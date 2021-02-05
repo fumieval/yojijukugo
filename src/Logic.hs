@@ -106,9 +106,6 @@ sampleIntSet gen s = case IS.splitRoot s of
       else sampleIntSet gen r
   _ -> pure Nothing
 
-difficultyWeights :: V.Vector Int
-difficultyWeights = V.postscanl' (+) 0 $ V.fromList [8,3,4,1]
-
 sampleDifficulty :: RandomGenM g r m => V.Vector Int -> g -> m Int
 sampleDifficulty weights gen = do
   t <- randomRM (0, V.last weights) gen
@@ -189,24 +186,21 @@ data Library = Library
   { libraryS :: HS.HashSet (V.Vector Char)
   , libraryV :: V.Vector (V.Vector Char)
   , libraryDifficulty :: V.Vector Int
+  , difficultyWeights :: V.Vector Int
   }
 
-newLibrary :: [[T.Text]] -> Library
+newLibrary :: [(Int, [T.Text])] -> Library
 newLibrary dataset = Library{..} where
   vecs :: [V.Vector (V.Vector Char)]
-  vecs = V.fromList . map (V.fromList . T.unpack) <$> dataset
+  vecs = V.fromList . map (V.fromList . T.unpack) . snd <$> dataset
   libraryS = HS.fromList $ V.toList libraryV
   libraryV = V.concat vecs
   libraryDifficulty = V.fromList $ scanl (+) 0 $ map V.length vecs
-
-newLibraryFromFiles :: [FilePath] -> IO Library
-newLibraryFromFiles paths = do
-  dataset <- forM paths $ \path -> T.lines <$> readFileUtf8 path
-  pure $! newLibrary dataset
+  difficultyWeights = V.postscanl' (+) 0 $ V.fromList $ map fst dataset
 
 prop_no_stuck :: Int -> QC.Property
 prop_no_stuck seed = HS.member (V.fromList target) jukugoSet QC.=== HS.isSubsetOf (HS.fromList target) charSet where
   target = "変幻自在"
   jukugoSet = HS.fromList $ IM.elems $ populate lib seed 6
   charSet = HS.fromList $ foldMap V.toList $ HS.toList jukugoSet
-  lib = newLibrary [fmap T.pack $ words "幻影旅団 心神耗弱 異口同音 変態百出 三位一体 打成一片 変幻自在 一心同体"]
+  lib = newLibrary [(,) 1 $ fmap T.pack $ words "幻影旅団 心神耗弱 異口同音 変態百出 三位一体 打成一片 変幻自在 一心同体"]

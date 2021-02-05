@@ -9,6 +9,7 @@ import Control.Lens
 import Control.Monad
 import Data.Function
 import Deriving.Aeson
+import Deriving.Aeson.Stock
 import Logic
 import Protocol
 import Web.Scotty
@@ -29,6 +30,7 @@ import RIO.FilePath ((</>))
 import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
 import qualified RIO.Text as T
+import qualified Data.Yaml as Yaml
 
 palette :: [String]
 palette =
@@ -54,12 +56,13 @@ data RoomState = RoomState
   , _roomFreshPlayerId :: Int
   , _roomRNG :: RNG
   , _roomLastActivity :: UTCTime
+  , _roomLibrary :: Library
   } deriving Generic
 makeLenses ''RoomState
 
 data Server = Server
   { rooms :: TVar (IM.IntMap (TVar RoomState))
-  , library :: Library
+  , refLibrary :: IORef Library
   , logger :: LogFunc
   }
 
@@ -127,10 +130,11 @@ recreateBoard = do
   vRoom <- asks sessionRoom
   server <- asks sessionServer
   room0 <- readTVarIO vRoom
+  lib <- readIORef $ refLibrary server
 
   let nextLevel = _boardDifficulty (_roomBoard room0) + 1.0
-  board <- liftIO $ generateBoard (library server) (_roomRNG room0) nextLevel (_scoreboard $ _roomBoard room0)
-  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board }
+  board <- liftIO $ generateBoard lib (_roomRNG room0) nextLevel (_scoreboard $ _roomBoard room0)
+  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLibrary = lib }
   roomId <- asks sessionRoomId
   saveSnapshot roomId board
   broadcast $ PutBoard board
@@ -169,7 +173,7 @@ updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
   room <- readTVar sessionRoom
   let name = room ^. roomPlayers . ix (unPlayerId playerId) . playerName
-  let (board', done) = runWriter $ checkFinish (library sessionServer) board
+  let (board', done) = runWriter $ checkFinish (_roomLibrary room) board
   let board'' = board' & scoreboard %~ Map.insertWith (+) name (length done)
   writeTVar sessionRoom $ room & roomBoard .~ board''
   pure $ do
@@ -238,6 +242,7 @@ wsApp sessionServer pending = do
 acquireRoom :: Server -> Int -> IO (TVar RoomState)
 acquireRoom Server{..} roomId = do
   m <- readTVarIO rooms
+  library <- readIORef refLibrary
   case IM.lookup roomId m of
     Nothing -> do
       -- create a room
@@ -255,24 +260,27 @@ acquireRoom Server{..} roomId = do
         , _roomFreshPlayerId = 0
         , _roomRNG = rng
         , _roomLastActivity = now
+        , _roomLibrary = library
         }
+      runRIO logger $ logInfo $ "Created room #" <> display roomId
       atomically $ modifyTVar' rooms $ IM.insert roomId v
       pure v
     Just room -> pure room
 
-newServer :: [FilePath] -> LogFunc -> IO Server
-newServer paths logger = do
+newServer :: FilePath -> LogFunc -> IO Server
+newServer cfg logger = do
   rooms <- newTVarIO mempty
-  library <- newLibraryFromFiles paths
+  lib <- runRIO logger $ loadConfig cfg
+  refLibrary <- newIORef lib
   pure Server{..}
 
 main :: IO ()
 main = do
-  paths <- getArgs
+  [cfgPath] <- getArgs
   logOptions' <- logOptionsHandle stderr True
   let logOptions = setLogUseTime True logOptions'
   withLogFunc logOptions $ \lf -> do
-    server <- newServer paths lf
+    server <- newServer cfgPath lf
     app <- scottyApp $ do
       get "/game/:id" $ 
         file "index.html"
@@ -283,7 +291,7 @@ main = do
     _ <- forkIO $ Warp.run 4444
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app
-    runRIO lf $ do
+    runRIO server $ do
       logInfo "Started the server"
       forever (liftIO prompt >>= \case
           "message" : msg -> do
@@ -291,6 +299,7 @@ main = do
             forM_ rooms $ \vRoom -> readTVarIO vRoom >>= \room -> forM_ (_roomPlayerConn room)
               $ \conn -> liftIO $ WS.sendTextData conn (J.encode $ PutStatus $ T.pack $ Prelude.unwords msg)
                 `catch` \(_ :: SomeException) -> pure ()
+          "reload" : _ -> loadConfig cfgPath >>= writeIORef (refLibrary server)
           _ -> liftIO (Prelude.putStrLn "?")) `finally` do
             rooms <- readTVarIO $ rooms server
             iforM_ rooms $ \i vRoom -> do
@@ -301,3 +310,24 @@ prompt :: IO [String]
 prompt = do
   Prelude.putStr "> " >> hFlush stdout
   Prelude.words <$> Prelude.getLine
+
+data Config = Config
+  { cfgDictionaries :: [DictionarySource]
+  } deriving (Generic)
+  deriving (FromJSON, ToJSON) via PrefixedSnake "cfg" Config
+
+data DictionarySource = DictionarySource
+  { dicPath :: FilePath
+  , dicWeight :: Int
+  } deriving (Generic)
+  deriving (FromJSON, ToJSON) via PrefixedSnake "dic" DictionarySource
+
+loadConfig :: HasLogFunc r => FilePath -> RIO r Library
+loadConfig path = do
+  Config{..} <- Yaml.decodeFileThrow path
+  dataset <- forM cfgDictionaries $ \dic -> do
+    ws <- T.lines <$> readFileUtf8 (dicPath dic)
+    pure (dicWeight dic, ws)
+  let lib = newLibrary dataset
+  logInfo $ "Loaded " <> display (V.length (libraryV lib)) <> " words"
+  pure lib
