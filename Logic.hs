@@ -4,16 +4,19 @@ module Logic where
 import RIO hiding ((^.), (%~), (.~), lens, (^?))
 import Control.Lens
 import Control.Lens.Unsound
+import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Writer
 import Data.Vector.Instances ()
 import Deriving.Aeson.Stock
 import System.Random.Stateful
+import Control.Monad.Trans.State
 import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import qualified Data.Text as T
+import qualified Test.QuickCheck as QC
 
 data Character = Character
   { charI :: Int
@@ -79,7 +82,8 @@ generateBoard
   -> IO Board
 generateBoard library gen difficulty scores = do
   let population = floor $ 1.5 ** difficulty
-  jukugos' <- tabulate <$> populate library gen population
+  seed <- randomM gen
+  let jukugos' = tabulate $ populate library seed population
   foldM (\b _ -> randomise gen b) (Board jukugos' difficulty scores) [0..population * population * 4]
 
 type CharSet = IS.IntSet
@@ -87,12 +91,12 @@ type CharSet = IS.IntSet
 toCharSet :: V.Vector Char -> IS.IntSet
 toCharSet = IS.fromList . map fromEnum . V.toList
 
-sampleIntSet :: (RandomGenM g r m) => g -> IS.IntSet -> m Int
+sampleIntSet :: (RandomGenM g r m) => g -> IS.IntSet -> m (Maybe Int)
 sampleIntSet gen s = case IS.splitRoot s of
   [_] -> do
     let vec = V.fromList $ IS.toList s
     i <- randomRM (0, V.length vec - 1) gen
-    pure $! vec V.! i
+    pure $! Just $! vec V.! i
   [l, r] -> do
     let m = IS.size l
     let n = IS.size r
@@ -100,7 +104,7 @@ sampleIntSet gen s = case IS.splitRoot s of
     if i < m
       then sampleIntSet gen l
       else sampleIntSet gen r
-  _ -> error "FIXME: splitRoot"
+  _ -> pure Nothing
 
 difficultyWeights :: V.Vector Int
 difficultyWeights = V.postscanl' (+) 0 $ V.fromList [8,3,4,1]
@@ -118,37 +122,56 @@ tabulate m = IM.fromList
 
 populate
   :: Library
-  -> RNG
   -> Int
-  -> IO (IM.IntMap (V.Vector Char))
-populate Library{..} gen population = go (IS.fromList [0..V.length libraryV - 1]) IS.empty 0 IM.empty (population * 8) where
+  -> Int
+  -> IM.IntMap (V.Vector Char)
+populate Library{..} seed population = flip evalState (mkStdGen seed)
+  $ go (IS.fromList [0..V.length libraryV - 1]) IS.empty 0 IM.empty (population * 8) where
   go :: IS.IntSet
     -> CharSet
     -> Int
     -> IM.IntMap (V.Vector Char)
     -> Int
-    -> IO (IM.IntMap (V.Vector Char))
+    -> State StdGen (IM.IntMap (V.Vector Char))
   go _ _ _ board 0 = pure board
   go available _ _ board _ | IS.null available = pure board
   go _ _ boardSize board _ | boardSize >= population = pure board
-  go available pool boardSize board counter = do
-    difficulty <- sampleDifficulty (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) gen
-    let filterL = snd $ IS.split (libraryDifficulty V.! difficulty) available
-    let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty) filterL
-    if IS.null filterR
-      then go available pool boardSize board (counter - 1)
-      else do
-        i <- sampleIntSet gen filterR
-        let jukugo = libraryV V.! i
-        let cset = toCharSet jukugo
-        let !nextPool = pool `IS.union` cset
-        let valid s = not . all ((`IS.member` s) . fromEnum)
-        let !available' = IS.filter (valid nextPool . (libraryV V.!)) available
-        let history = IM.filterWithKey (\j v -> valid (pool `IS.difference` toCharSet (libraryV V.! j)) v) board
-        let newSize = IM.size history + 1
-        if newSize * 2 <= boardSize -- reject a candidate which shrinks the solution
-          then go available pool boardSize board (counter - 1)
-          else go available' nextPool newSize (IM.insert i jukugo history) counter
+  go !available !pool !boardSize !board !counter = do
+    difficulty <- sampleDifficulty (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) StateGenM
+    let filterL = snd $ IS.split (libraryDifficulty V.! difficulty - 1) available
+    let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty + 1) filterL
+
+    let trial = do
+          -- pick a candidate
+          i <- MaybeT $ sampleIntSet StateGenM filterR
+
+          let reachable s = all ((`IS.member` s) . fromEnum)
+          let jukugo = libraryV V.! i
+          let cset = toCharSet jukugo
+
+          -- reject if it can be created from the existing set
+          guard $ not $ reachable pool jukugo
+
+          let pool' = pool `IS.union` cset
+
+          let ambiguity = [T.pack $ V.toList other | j <- [0..V.length libraryV - 1]
+                , IM.notMember j board
+                , let other = libraryV V.! j
+                , toCharSet other /= cset -- 色即是空　空即是色
+                , reachable pool' other]
+          guard $ case ambiguity of
+            _ : _ : _ -> False
+            _ -> True
+          return $ go
+            (IS.delete i available)
+            pool'
+            (boardSize + 1)
+            (IM.insert i jukugo board)
+            (counter - 1)
+
+    runMaybeT trial >>= \case
+      Nothing -> go available pool boardSize board (counter - 1)
+      Just cont -> cont
 
 checkFinish :: Library
   -> Board
@@ -180,3 +203,10 @@ newLibraryFromFiles :: [FilePath] -> IO Library
 newLibraryFromFiles paths = do
   dataset <- forM paths $ \path -> T.lines <$> readFileUtf8 path
   pure $! newLibrary dataset
+
+prop_no_stuck :: Int -> QC.Property
+prop_no_stuck seed = HS.member (V.fromList target) jukugoSet QC.=== HS.isSubsetOf (HS.fromList target) charSet where
+  target = "変幻自在"
+  jukugoSet = HS.fromList $ IM.elems $ populate lib seed 6
+  charSet = HS.fromList $ foldMap V.toList $ HS.toList jukugoSet
+  lib = newLibrary [fmap T.pack $ words "幻影旅団 心神耗弱 異口同音 変態百出 三位一体 打成一片 変幻自在 一心同体"]

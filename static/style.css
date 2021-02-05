@@ -7,7 +7,7 @@ ul {
 }
 #app {
   margin: 2em auto 0em auto;
-  width: 900px;
+  width: 1100px;
 }
 
 #table {
@@ -37,7 +37,7 @@ ul {
   color: red;
 }
 
-@media (min-width: 900px)
+@media (min-width: 1100px)
 {
   #table {
     width: 600px;
@@ -47,7 +47,7 @@ ul {
   }
 }
 
-@media (max-width: 900px)
+@media (max-width: 1100px)
 {
   #table {
     width: 300px;
