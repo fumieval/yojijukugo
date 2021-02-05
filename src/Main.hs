@@ -9,8 +9,8 @@ import Control.Lens
 import Control.Monad
 import Data.Function
 import Deriving.Aeson
-import Deriving.Aeson.Stock
 import Logic
+import Protocol
 import Web.Scotty
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as C8
@@ -30,16 +30,6 @@ import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
 import qualified RIO.Text as T
 
-data ClientMessage = Touch Int
-  | Untouch Int
-  | Swap (Int, Int)
-  | SetPlayerName Text
-  | Heartbeat
-  deriving (Show, Generic)
-  deriving (FromJSON, ToJSON) via CustomJSON '[TagSingleConstructors, SumObjectWithSingleField] ClientMessage
-
-newtype PlayerId = PlayerId { unPlayerId :: Int } deriving (FromJSON, ToJSON, Show)
-
 palette :: [String]
 palette =
   [ "#00DD50"
@@ -57,26 +47,6 @@ palette =
   ]
 
 
-data Player = Player
-  { _playerName :: Text
-  , _playerColor :: String
-  } deriving Generic
-  deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
-makeLenses ''Player
-
-data ServerMessage = PutBoard Board
-  | PutScoreboard Scoreboard
-  | PutPlayers (IM.IntMap Player)
-  | PutYou (PlayerId, Player)
-  | AckTouch PlayerId Int
-  | AckUntouch PlayerId Int
-  | AckSwap PlayerId Int Int
-  | AckDone Int
-  | PutStatus Text
-  | LevelFinished
-  deriving Generic
-  deriving (FromJSON, ToJSON) via CustomJSON '[TagSingleConstructors, SumObjectWithSingleField] ServerMessage
-
 data RoomState = RoomState
   { _roomPlayers :: IM.IntMap Player
   , _roomBoard :: Board
@@ -92,6 +62,7 @@ data Server = Server
   , library :: Library
   , logger :: LogFunc
   }
+
 instance HasLogFunc Server where
   logFuncL = lens logger $ \x f -> x { logger = f }
 
