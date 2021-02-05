@@ -187,9 +187,29 @@ checkComplete = do
         recreateBoard
     broadcast $ PutStatus "次章突入"
 
+handleMessage :: PlayerId -> ClientMessage -> SessionM ()
+handleMessage playerId msg = do
+  session@Session{..} <- ask
+  case msg of
+    Heartbeat -> pure ()
+    SetPlayerName name -> do
+      atomically $ modifyTVar' sessionRoom
+        $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
+      broadcastPlayers
+    Touch i -> broadcast $ AckTouch playerId i
+    Untouch i -> broadcast $ AckUntouch playerId i
+    Swap (i, j) -> join $ atomically $ do
+      let p = divMod i 4
+      let q = divMod j 4
+      room <- readTVar sessionRoom
+      case swap p q $ _roomBoard room of
+        Nothing -> pure mempty -- ERROR
+        Just board -> (broadcast (AckSwap playerId i j)>>)
+          <$> updateBoard session playerId board
+
 sessionLoop :: SessionM ()
 sessionLoop = withPlayer $ \playerId -> do
-  session@Session{..} <- ask
+  Session{..} <- ask
   readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
   checkComplete
 
@@ -197,22 +217,7 @@ sessionLoop = withPlayer $ \playerId -> do
     WS.DataMessage _ _ _ (WS.Text jsonStr _) -> do
       case J.decode jsonStr of
         Nothing -> logError $ "Failed to parse: " <> displayShow jsonStr
-        Just msg -> case msg of
-          Heartbeat -> pure ()
-          SetPlayerName name -> do
-            atomically $ do
-              modifyTVar' sessionRoom $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
-            broadcastPlayers
-          Touch i -> broadcast $ AckTouch playerId i
-          Untouch i -> broadcast $ AckUntouch playerId i
-          Swap (i, j) -> join $ atomically $ do
-            let p = divMod i 4
-            let q = divMod j 4
-            room <- readTVar sessionRoom
-            case swap p q $ _roomBoard room of
-              Nothing -> pure mempty -- ERROR
-              Just board -> (broadcast (AckSwap playerId i j)>>)
-                <$> updateBoard session playerId board
+        Just msg -> handleMessage playerId msg
       self
     WS.ControlMessage (WS.Close _ _) -> pure ()
     _ -> self
@@ -230,30 +235,34 @@ wsApp sessionServer pending = do
     board <- _roomBoard <$> readTVarIO sessionRoom
     saveSnapshot sessionRoomId board
 
-acquireRoom :: Server -> Int -> IO (TVar RoomState)
-acquireRoom Server{..} roomId = do
-  m <- readTVarIO rooms
+createRoom :: Server -> Int -> IO (TVar RoomState)
+createRoom Server{..} roomId = do
   library <- readIORef refLibrary
+  rng <- newAtomicGenM $ mkStdGen roomId
+  let path = latestSnapshotPath roomId
+  hasSnapshot <- doesFileExist path
+  now <- getCurrentTime
+  board <- if hasSnapshot
+    then either error id <$> J.eitherDecodeFileStrict path
+    else generateBoard library rng 2.0 mempty
+  v <- newTVarIO $ RoomState
+    { _roomPlayers = mempty
+    , _roomBoard = board
+    , _roomPlayerConn = mempty
+    , _roomFreshPlayerId = 0
+    , _roomRNG = rng
+    , _roomLastActivity = now
+    , _roomLibrary = library
+    }
+  runRIO logger $ logInfo $ "Created room #" <> display roomId
+  pure v
+
+acquireRoom :: Server -> Int -> IO (TVar RoomState)
+acquireRoom server@Server{..} roomId = do
+  m <- readTVarIO rooms
   case IM.lookup roomId m of
     Nothing -> do
-      -- create a room
-      rng <- newAtomicGenM $ mkStdGen roomId
-      let path = latestSnapshotPath roomId
-      hasSnapshot <- doesFileExist path
-      now <- getCurrentTime
-      board <- if hasSnapshot
-        then either error id <$> J.eitherDecodeFileStrict path
-        else generateBoard library rng 2.0 mempty
-      v <- newTVarIO $ RoomState
-        { _roomPlayers = mempty
-        , _roomBoard = board
-        , _roomPlayerConn = mempty
-        , _roomFreshPlayerId = 0
-        , _roomRNG = rng
-        , _roomLastActivity = now
-        , _roomLibrary = library
-        }
-      runRIO logger $ logInfo $ "Created room #" <> display roomId
+      v <- createRoom server roomId
       atomically $ modifyTVar' rooms $ IM.insert roomId v
       pure v
     Just room -> pure room
