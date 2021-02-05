@@ -16,7 +16,6 @@ import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WS
 import qualified Network.WebSockets as WS
@@ -29,6 +28,7 @@ import System.Random.Stateful
 import RIO.FilePath ((</>))
 import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
+import qualified RIO.Text as T
 
 data ClientMessage = Touch Int
   | Untouch Int
@@ -207,7 +207,6 @@ updateBoard Session{..} playerId board = do
     forM_ done $ broadcast . AckDone
     unless (null done) $ do
       broadcast $ PutScoreboard $ board'' ^. scoreboard
-      _ <- forkIO $ saveSnapshot sessionRoomId board'
       checkComplete
 
 checkComplete :: SessionM ()
@@ -222,6 +221,36 @@ checkComplete = do
         recreateBoard
     broadcast $ PutStatus "次章突入"
 
+sessionLoop :: SessionM ()
+sessionLoop = withPlayer $ \playerId -> do
+  session@Session{..} <- ask
+  readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
+  checkComplete
+
+  fix $ \self -> liftIO (WS.receive sessionConn) >>= \case
+    WS.DataMessage _ _ _ (WS.Text jsonStr _) -> do
+      case J.decode jsonStr of
+        Nothing -> logError $ "Failed to parse: " <> displayShow jsonStr
+        Just msg -> case msg of
+          Heartbeat -> pure ()
+          SetPlayerName name -> do
+            atomically $ do
+              modifyTVar' sessionRoom $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
+            broadcastPlayers
+          Touch i -> broadcast $ AckTouch playerId i
+          Untouch i -> broadcast $ AckUntouch playerId i
+          Swap (i, j) -> join $ atomically $ do
+            let p = divMod i 4
+            let q = divMod j 4
+            room <- readTVar sessionRoom
+            case swap p q $ _roomBoard room of
+              Nothing -> pure mempty -- ERROR
+              Just board -> (broadcast (AckSwap playerId i j)>>)
+                <$> updateBoard session playerId board
+      self
+    WS.ControlMessage (WS.Close _ _) -> pure ()
+    _ -> self
+
 wsApp :: Server -> WS.ServerApp
 wsApp sessionServer pending = do
   sessionConn <- WS.acceptRequest pending
@@ -230,37 +259,10 @@ wsApp sessionServer pending = do
     ["game", str] | Just i <- readMaybe (C8.unpack str) -> pure i
     s -> error $ "Failed to parse roomId: " ++ show s
   sessionRoom <- acquireRoom sessionServer sessionRoomId
-  let session = Session{..}
 
-  runRIO session $ withPlayer $ \playerId -> do
-    readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
-    checkComplete
-
-    fix $ \self -> do
-      liftIO (WS.receive sessionConn) >>= \case
-        WS.DataMessage _ _ _ (WS.Text jsonStr _) -> do
-          case J.decode jsonStr of
-            Nothing -> logError $ "Failed to parse: " <> displayShow jsonStr
-            Just msg -> case msg of
-              Heartbeat -> pure ()
-              SetPlayerName name -> do
-                atomically $ do
-                  modifyTVar' sessionRoom $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
-                broadcastPlayers
-              Touch i -> broadcast $ AckTouch playerId i
-              Untouch i -> broadcast $ AckUntouch playerId i
-              Swap (i, j) -> join $ atomically $ do
-                let p = divMod i 4
-                let q = divMod j 4
-                room <- readTVar sessionRoom
-                case swap p q $ _roomBoard room of
-                  Nothing -> pure mempty -- ERROR
-                  Just board -> (broadcast (AckSwap playerId i j)>>)
-                    <$> updateBoard session playerId board
-          self
-        WS.ControlMessage (WS.Close _ _) -> pure ()
-        _ -> self
-      pure ()
+  runRIO Session{..} $ sessionLoop `finally` do
+    board <- _roomBoard <$> readTVarIO sessionRoom
+    saveSnapshot sessionRoomId board
 
 acquireRoom :: Server -> Int -> IO (TVar RoomState)
 acquireRoom Server{..} roomId = do
@@ -303,10 +305,28 @@ main = do
     app <- scottyApp $ do
       get "/game/:id" $ 
         file "index.html"
-    runRIO lf $ logInfo "Started the server"
+
     _ <- forkIO $ forever $ do
       threadDelay $ 10 * 1000000
       runRIO server closeInactiveRooms 
-    Warp.run 4444
+    _ <- forkIO $ Warp.run 4444
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app
+    runRIO lf $ do
+      logInfo "Started the server"
+      forever (liftIO prompt >>= \case
+          "message" : msg -> do
+            rooms <- readTVarIO $ rooms server
+            forM_ rooms $ \vRoom -> readTVarIO vRoom >>= \room -> forM_ (_roomPlayerConn room)
+              $ \conn -> liftIO $ WS.sendTextData conn (J.encode $ PutStatus $ T.pack $ Prelude.unwords msg)
+                `catch` \(_ :: SomeException) -> pure ()
+          _ -> liftIO (Prelude.putStrLn "?")) `finally` do
+            rooms <- readTVarIO $ rooms server
+            iforM_ rooms $ \i vRoom -> do
+              board <- _roomBoard <$> readTVarIO vRoom
+              saveSnapshot i board
+
+prompt :: IO [String]
+prompt = do
+  Prelude.putStr "> " >> hFlush stdout
+  Prelude.words <$> Prelude.getLine
