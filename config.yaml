@@ -7,3 +7,4 @@ dictionaries:
   path: dictionaries/hard.txt
 - weight: 1
   path: dictionaries/joke.txt
+port: 4444

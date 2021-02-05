@@ -20,6 +20,7 @@ extra-source-files:  CHANGELOG.md
 executable yojijukugo
   main-is:             Main.hs
   other-modules:
+    Gameplay
     Logic
     Protocol
   -- other-extensions:
