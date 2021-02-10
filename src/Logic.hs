@@ -6,6 +6,7 @@ import Control.Lens
 import Control.Lens.Unsound
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Writer
+import Data.Functor.Compose
 import Data.Vector.Instances ()
 import Deriving.Aeson.Stock
 import System.Random.Stateful
@@ -17,6 +18,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import qualified Data.Text as T
 import qualified Test.QuickCheck as QC
+import qualified Data.Heap as H
 
 data Character = Character
   { charI :: Int
@@ -66,13 +68,24 @@ swap (r0, c0) (r1, c1)
 
 type RNG = AtomicGenM StdGen
 
-randomise :: RNG -> Board -> IO Board
-randomise gen board = do
-  i <- randomRM (0, IM.size (_jukugos board) - 1) gen
-  j <- randomRM (0, IM.size (_jukugos board) - 1) gen
-  p <- randomRM (0, 3) gen
-  q <- randomRM (0, 3) gen
-  maybe (error "Failed to swap!") pure $ swap (i, p) (j, q) board
+shuffle :: forall s a gen. RandomGen gen => gen -> ATraversal' s a -> s -> s
+shuffle gen0 trav struct =
+  let (popper, (h, _)) = runState
+        (getCompose $ cloneTraversal trav act struct)
+        (H.empty, gen0)
+  in evalState popper h
+  where
+    act :: a -> Compose (State (H.Heap (H.Entry Int a), gen)) (State (H.Heap (H.Entry Int a))) a
+    act a = Compose $ state $ \(h, gen) ->
+      let (r, gen') = uniform gen
+          !h' = H.insert (H.Entry r a) h
+      in (pop, (h', gen'))
+    pop = state $ \h -> case H.viewMin h of
+      Nothing -> error "Impossible"
+      Just (H.Entry _ a, h') -> (a, h')
+
+randomise :: StdGen -> Board -> Board
+randomise gen = jukugos %~ shuffle gen (traverse . content . each)
 
 generateBoard
   :: Library -- ^ all list of jukugos
@@ -84,7 +97,8 @@ generateBoard library gen difficulty scores = do
   let population = floor $ 1.5 ** difficulty
   seed <- randomM gen
   let jukugos' = tabulate $ populate library seed population
-  foldM (\b _ -> randomise gen b) (Board jukugos' difficulty scores) [0..population * population * 4]
+  pure $! randomise (mkStdGen seed)
+    (Board jukugos' difficulty scores)
 
 type CharSet = IS.IntSet
 

@@ -46,6 +46,7 @@ executable yojijukugo
     , QuickCheck
     , time
     , yaml
+    , heaps
   hs-source-dirs: src
   default-language:    Haskell2010
   ghc-options: -threaded -Wall
