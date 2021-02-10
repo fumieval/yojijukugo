@@ -18,7 +18,6 @@ import qualified Network.WebSockets as WS
 import qualified Data.Vector as V
 import RIO hiding ((^.), (%~), (.~), lens)
 import Control.Monad.Writer
-import System.Random.Stateful
 import RIO.FilePath ((</>))
 import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
@@ -50,7 +49,6 @@ data RoomState = RoomState
   , _roomBoard :: Board
   , _roomPlayerConn :: IM.IntMap WS.Connection
   , _roomFreshPlayerId :: Int
-  , _roomRNG :: RNG
   , _roomLastActivity :: UTCTime
   , _roomLibrary :: Library
   } deriving Generic
@@ -123,10 +121,11 @@ recreateBoard = do
   room0 <- readTVarIO vRoom
   lib <- readIORef $ refLibrary server
 
-  let nextLevel = _boardDifficulty (_roomBoard room0) + 1.0
-  board <- liftIO $ generateBoard lib (_roomRNG room0) nextLevel (_scoreboard $ _roomBoard room0)
-  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLibrary = lib }
+  let nextLevel = _boardDifficulty (_roomBoard room0) + 1
   roomId <- asks sessionRoomId
+  board <- liftIO $ generateBoard lib (roomId) nextLevel (_scoreboard $ _roomBoard room0)
+  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLibrary = lib }
+
   saveSnapshot roomId board
   broadcast $ PutBoard board
 
@@ -238,19 +237,17 @@ wsApp sessionServer pending = do
 createRoom :: Server -> Int -> IO (TVar RoomState)
 createRoom Server{..} roomId = do
   library <- readIORef refLibrary
-  rng <- newAtomicGenM $ mkStdGen roomId
   let path = latestSnapshotPath roomId
   hasSnapshot <- doesFileExist path
   now <- getCurrentTime
   board <- if hasSnapshot
     then either error id <$> J.eitherDecodeFileStrict path
-    else generateBoard library rng 2.0 mempty
+    else generateBoard library roomId 2 mempty
   v <- newTVarIO $ RoomState
     { _roomPlayers = mempty
     , _roomBoard = board
     , _roomPlayerConn = mempty
     , _roomFreshPlayerId = 0
-    , _roomRNG = rng
     , _roomLastActivity = now
     , _roomLibrary = library
     }

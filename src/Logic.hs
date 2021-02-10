@@ -37,7 +37,7 @@ type Scoreboard = Map.Map T.Text Int
 
 data Board = Board
   { _jukugos :: IM.IntMap Jukugo
-  , _boardDifficulty :: Double
+  , _boardDifficulty :: Int
   , _scoreboard :: Scoreboard
   } deriving (Generic, Show)
   deriving (FromJSON, ToJSON) via Prefixed "_" Board
@@ -89,15 +89,15 @@ randomise gen = jukugos %~ shuffle gen (traverse . content . each)
 
 generateBoard
   :: Library -- ^ all list of jukugos
-  -> RNG
-  -> Double
+  -> Int
+  -> Int
   -> Scoreboard
   -> IO Board
-generateBoard library gen difficulty scores = do
-  let population = floor $ 1.5 ** difficulty
-  seed <- randomM gen
-  let jukugos' = tabulate $ populate library seed population
-  pure $! randomise (mkStdGen seed)
+generateBoard library seed difficulty scores = do
+  let population = floor (1.5 ** fromIntegral difficulty :: Double)
+  let (boardGen, shuffleGen) = split $ mkStdGen $ seed * 256 + difficulty
+  let jukugos' = tabulate $ populate library boardGen population
+  pure $! randomise shuffleGen
     (Board jukugos' difficulty scores)
 
 type CharSet = IS.IntSet
@@ -133,10 +133,10 @@ tabulate m = IM.fromList
 
 populate
   :: Library
-  -> Int
+  -> StdGen
   -> Int
   -> IM.IntMap (V.Vector Char)
-populate Library{..} seed population = flip evalState (mkStdGen seed)
+populate Library{..} gen0 population = flip evalState gen0
   $ go (IS.fromList [0..V.length libraryV - 1]) IS.empty 0 IM.empty (population * 8) where
   go :: IS.IntSet
     -> CharSet
@@ -215,6 +215,6 @@ newLibrary dataset = Library{..} where
 prop_no_stuck :: Int -> QC.Property
 prop_no_stuck seed = HS.member (V.fromList target) jukugoSet QC.=== HS.isSubsetOf (HS.fromList target) charSet where
   target = "変幻自在"
-  jukugoSet = HS.fromList $ IM.elems $ populate lib seed 6
+  jukugoSet = HS.fromList $ IM.elems $ populate lib (mkStdGen seed) 6
   charSet = HS.fromList $ foldMap V.toList $ HS.toList jukugoSet
   lib = newLibrary [(,) 1 $ fmap T.pack $ words "幻影旅団 心神耗弱 異口同音 変態百出 三位一体 打成一片 変幻自在 一心同体"]
