@@ -1,5 +1,16 @@
 {-# LANGUAGE TemplateHaskell #-}
-module Gameplay where
+module Gameplay
+  ( RoomState(..)
+  , roomLibrary
+  , wsApp
+  , saveSnapshot
+  , Server(..)
+  , newServer
+  , closeInactiveRooms
+  , Config(..)
+  , DictionarySource(..)
+  , loadConfig
+  ) where
 
 import UnliftIO.Concurrent (forkIO)
 import qualified Prelude

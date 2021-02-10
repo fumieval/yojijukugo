@@ -1,5 +1,19 @@
 {-# LANGUAGE TemplateHaskell #-}
-module Logic where
+module Logic
+  ( Library(..)
+  , Character(..)
+  , Jukugo(..)
+  , finished
+  , Scoreboard
+  , Board(..)
+  , scoreboard
+  , boardDifficulty
+  , Position
+  , swap
+  , generateBoard
+  , checkFinish
+  , newLibrary
+  , prop_no_stuck) where
 
 import RIO hiding ((^.), (%~), (.~), lens, (^?))
 import Control.Lens
@@ -65,8 +79,6 @@ swap (r0, c0) (r1, c1)
       let bravo' = bravo & content . ix c1 .~ a
       pure (Just alpha', Just bravo')
     x -> pure x
-
-type RNG = AtomicGenM StdGen
 
 shuffle :: forall s a gen. RandomGen gen => gen -> ATraversal' s a -> s -> s
 shuffle gen0 trav struct =
