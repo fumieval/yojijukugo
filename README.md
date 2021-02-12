@@ -14,6 +14,8 @@
 $ cabal run yojijukugo config.yaml
 ```
 
+`/game/{任意の10進数}`にアクセスすると始められます。
+
 謝辞
 ----
 
