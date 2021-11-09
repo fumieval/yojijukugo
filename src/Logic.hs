@@ -16,7 +16,7 @@ module Logic
   , prop_no_stuck) where
 
 import RIO hiding ((^.), (%~), (.~), lens, (^?))
-import Control.Lens
+import Control.Lens hiding (Prefixed)
 import Control.Lens.Unsound
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Writer
@@ -33,6 +33,7 @@ import qualified Data.Vector as V
 import qualified Data.Text as T
 import qualified Test.QuickCheck as QC
 import qualified Data.Heap as H
+import qualified Sample
 
 data Character = Character
   { charI :: Int
@@ -117,38 +118,26 @@ type CharSet = IS.IntSet
 toCharSet :: V.Vector Char -> IS.IntSet
 toCharSet = IS.fromList . map fromEnum . V.toList
 
-sampleIntSet :: (RandomGenM g r m) => g -> IS.IntSet -> m (Maybe Int)
-sampleIntSet gen s = case IS.splitRoot s of
-  [_] -> do
-    let vec = V.fromList $ IS.toList s
-    i <- randomRM (0, V.length vec - 1) gen
-    pure $! Just $! vec V.! i
-  [l, r] -> do
-    let m = IS.size l
-    let n = IS.size r
-    i <- randomRM (0, m + n - 1) gen
-    if i < m
-      then sampleIntSet gen l
-      else sampleIntSet gen r
-  _ -> pure Nothing
-
-sampleDifficulty :: RandomGenM g r m => V.Vector Int -> g -> m Int
-sampleDifficulty weights gen = do
-  t <- randomRM (0, V.last weights) gen
-  pure $! maybe 0 id $ V.findIndex (>=t) weights
-
 tabulate :: IM.IntMap (V.Vector Char) -> IM.IntMap Jukugo
 tabulate m = IM.fromList
   [ (i, Jukugo False $ V.zipWith Character (V.enumFromTo (i * 4) (i * 4 + 3)) v)
   | (i, v) <- zip [0..] $ IM.elems m
   ]
 
+-- | 難易度で重みづけ、四字熟語のインデックスを返す
+sampleLibrary :: Library -> IS.IntSet -> State StdGen (Maybe Int)
+sampleLibrary Library{..} available = do
+  difficulty <- Sample.weights (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) StateGenM
+  let filterL = snd $ IS.split (libraryDifficulty V.! difficulty - 1) available
+  let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty + 1) filterL
+  Sample.intSet StateGenM filterR
+
 populate
   :: Library
   -> StdGen
   -> Int
   -> IM.IntMap (V.Vector Char)
-populate Library{..} gen0 population = flip evalState gen0
+populate lib@Library{..} gen0 population = flip evalState gen0
   $ go (IS.fromList [0..V.length libraryV - 1]) IS.empty 0 IM.empty (population * 8) where
   go :: IS.IntSet
     -> CharSet
@@ -160,13 +149,10 @@ populate Library{..} gen0 population = flip evalState gen0
   go available _ _ board _ | IS.null available = pure board
   go _ _ boardSize board _ | boardSize >= population = pure board
   go !available !pool !boardSize !board !counter = do
-    difficulty <- sampleDifficulty (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) StateGenM
-    let filterL = snd $ IS.split (libraryDifficulty V.! difficulty - 1) available
-    let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty + 1) filterL
 
     let trial = do
           -- pick a candidate
-          i <- MaybeT $ sampleIntSet StateGenM filterR
+          i <- MaybeT $ sampleLibrary lib available
 
           let reachable s = all ((`IS.member` s) . fromEnum)
           let jukugo = libraryV V.! i

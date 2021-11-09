@@ -23,6 +23,7 @@ executable yojijukugo
     Gameplay
     Logic
     Protocol
+    Sample
   -- other-extensions:
   build-depends:       base >=4.14 && <4.17, scotty, websockets, vector, random, text
     , bytestring
@@ -37,7 +38,6 @@ executable yojijukugo
     , websockets
     , aeson
     , stm
-    , mason
     , mtl
     , lens
     , wai-middleware-static
