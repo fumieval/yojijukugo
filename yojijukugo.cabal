@@ -60,3 +60,6 @@ executable yojijukugo
     , LambdaCase
     , GeneralisedNewtypeDeriving
     , BangPatterns
+    , NoFieldSelectors
+    , OverloadedRecordDot
+    , DuplicateRecordFields

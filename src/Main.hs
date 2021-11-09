@@ -35,29 +35,29 @@ main = do
     _ <- forkIO $ forever $ do
       threadDelay $ 10 * 1000000
       runRIO server closeInactiveRooms
-    _ <- forkIO $ Warp.run (cfgPort cfg)
+    _ <- forkIO $ Warp.run cfg.port
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app
     runRIO server $ do
       logInfo "Started the server"
       forever (liftIO prompt >>= commandHandler) `finally` do
-        rooms <- readTVarIO $ rooms server
+        rooms <- readTVarIO $ server.vRooms
         iforM_ rooms $ \i vRoom -> do
-          board <- _roomBoard <$> readTVarIO vRoom
-          saveSnapshot i board
+          room <- readTVarIO vRoom
+          saveSnapshot i room.board
 
 commandHandler :: [String] -> RIO Server ()
 commandHandler = \case
   "message" : msg -> do
     server <- ask
-    rooms <- readTVarIO $ rooms server
-    forM_ rooms $ \vRoom -> readTVarIO vRoom >>= \room -> forM_ (_roomPlayerConn room)
+    rooms <- readTVarIO server.vRooms
+    forM_ rooms $ \vRoom -> readTVarIO vRoom >>= \room -> forM_ room.playerConn
       $ \conn -> liftIO $ WS.sendTextData conn (J.encode $ PutStatus $ T.pack $ Prelude.unwords msg)
         `catch` \(_ :: SomeException) -> pure ()
   "reload" : path : _ -> do
     server <- ask
     cfg <- Yaml.decodeFileThrow path
-    loadConfig cfg >>= writeIORef (refLibrary server)
+    loadConfig cfg >>= writeIORef server.refLibrary
   _ -> liftIO (Prelude.putStrLn "?")
 
 prompt :: IO [String]

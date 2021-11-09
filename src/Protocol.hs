@@ -1,7 +1,5 @@
-{-# LANGUAGE TemplateHaskell #-}
 module Protocol where
 
-import Control.Lens (makeLenses)
 import Data.IntMap.Strict qualified as IM
 import Deriving.Aeson
 import Deriving.Aeson.Stock
@@ -17,11 +15,10 @@ data ClientMessage = Touch Int
   deriving (FromJSON, ToJSON) via CustomJSON '[TagSingleConstructors, SumObjectWithSingleField] ClientMessage
 
 data Player = Player
-  { _playerName :: Text
-  , _playerColor :: String
+  { name :: Text
+  , color :: String
   } deriving Generic
-  deriving (FromJSON, ToJSON) via PrefixedSnake "_player" Player
-makeLenses ''Player
+  deriving (FromJSON, ToJSON) via Vanilla Player
 
 data ServerMessage = PutBoard Board
   | PutScoreboard Scoreboard

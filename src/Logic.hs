@@ -1,13 +1,12 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Logic
   ( Library(..)
   , Character(..)
   , Jukugo(..)
-  , finished
   , Scoreboard
   , Board(..)
-  , scoreboard
-  , boardDifficulty
   , Position
   , swap
   , generateBoard
@@ -34,53 +33,59 @@ import System.Random.Stateful
 import Test.QuickCheck qualified as QC
 
 data Character = Character
-  { charI :: Int
-  , charC :: Char
+  { id :: Int
+  , char :: Char
   } deriving (Generic, Show)
-  deriving (FromJSON, ToJSON) via PrefixedSnake "char" Character
+  deriving (FromJSON, ToJSON) via Vanilla Character
 
 data Jukugo = Jukugo
-  { _finished :: Bool
-  , _content :: V.Vector Character
+  { finished :: Bool
+  , content :: V.Vector Character
   } deriving (Generic, Show)
-  deriving (FromJSON, ToJSON) via Prefixed "_" Jukugo
-makeLenses ''Jukugo
+
+makeLensesFor [("content", "_content")] ''Jukugo
+
+instance FromJSON Jukugo
+instance ToJSON Jukugo
 
 type Scoreboard = Map.Map T.Text Int
 
 data Board = Board
-  { _jukugos :: IM.IntMap Jukugo
-  , _boardDifficulty :: Int
-  , _scoreboard :: Scoreboard
+  { jukugos :: IM.IntMap Jukugo
+  , difficulty :: Int
+  , scoreboard :: Scoreboard
   } deriving (Generic, Show)
-  deriving (FromJSON, ToJSON) via Prefixed "_" Board
-makeLenses ''Board
+makeLensesFor [("jukugos", "_jukugos")] ''Board
 
+instance FromJSON Board
+instance ToJSON Board
 type Position = (Int, Int)
 
 swap :: Position -> Position -> Board -> Maybe Board
 swap (r0, c0) (r1, c1)
-  | r0 == r1 = jukugos . ix r0 $ \jukugo -> do
-      guard $ not $ _finished jukugo
-      a <- jukugo ^? content . ix c0
-      b <- jukugo ^? content . ix c1
+  | r0 == r1 = _jukugos . ix r0 $ \jukugo -> do
+      guard $ not $ jukugo.finished
+      a <- jukugo ^? _content . ix c0
+      b <- jukugo ^? _content . ix c1
       pure
-          $ content . ix c0 .~ b
-          $ content . ix c1 .~ a
+          $ _content . ix c0 .~ b
+          $ _content . ix c1 .~ a
           $ jukugo
-  | otherwise = jukugos . lensProduct (at r0) (at r1) $ \case
+  | otherwise = _jukugos . lensProduct (at r0) (at r1) $ \case
     (Just alpha, Just bravo) -> do
-      guard $ not $ _finished alpha
-      guard $ not $ _finished bravo
-      a <- alpha ^? content . ix c0
-      b <- bravo ^? content . ix c1
-      let alpha' = alpha & content . ix c0 .~ b
-      let bravo' = bravo & content . ix c1 .~ a
+      -- XXX 完成した熟語には触れないようにする
+      guard $ not $ alpha.finished
+      guard $ not $ bravo.finished
+
+      a <- alpha ^? _content . ix c0
+      b <- bravo ^? _content . ix c1
+      let alpha' = alpha & _content . ix c0 .~ b
+      let bravo' = bravo & _content . ix c1 .~ a
       pure (Just alpha', Just bravo')
     x -> pure x
 
 randomise :: StdGen -> Board -> Board
-randomise gen = jukugos %~ Sample.shuffle gen (traverse . content . each)
+randomise gen = _jukugos %~ Sample.shuffle gen (traverse . _content . each)
 
 generateBoard
   :: Library -- ^ all list of jukugos
@@ -109,9 +114,9 @@ tabulate m = IM.fromList
 -- | 難易度で重みづけ、四字熟語のインデックスを返す
 sampleLibrary :: Library -> IS.IntSet -> State StdGen (Maybe Int)
 sampleLibrary Library{..} available = do
-  difficulty <- Sample.weights (V.zipWith const difficultyWeights $ V.tail libraryDifficulty) StateGenM
-  let filterL = snd $ IS.split (libraryDifficulty V.! difficulty - 1) available
-  let filterR = fst $ IS.split (libraryDifficulty V.! succ difficulty + 1) filterL
+  d <- Sample.weights (V.zipWith const difficultyWeights $ V.tail difficulty) StateGenM
+  let filterL = snd $ IS.split (difficulty V.! d - 1) available
+  let filterR = fst $ IS.split (difficulty V.! succ d + 1) filterL
   Sample.intSet StateGenM filterR
 
 populate
@@ -119,8 +124,8 @@ populate
   -> StdGen
   -> Int
   -> IM.IntMap (V.Vector Char)
-populate lib@Library{..} gen0 population = flip evalState gen0
-  $ go (IS.fromList [0..V.length libraryV - 1]) IS.empty 0 IM.empty (population * 8) where
+populate lib gen0 population = flip evalState gen0
+  $ go (IS.fromList [0..V.length lib.vector - 1]) IS.empty 0 IM.empty (population * 8) where
   go :: IS.IntSet
     -> CharSet
     -> Int
@@ -137,7 +142,7 @@ populate lib@Library{..} gen0 population = flip evalState gen0
           i <- MaybeT $ sampleLibrary lib available
 
           let reachable s = all ((`IS.member` s) . fromEnum)
-          let jukugo = libraryV V.! i
+          let jukugo = lib.vector V.! i
           let cset = toCharSet jukugo
 
           -- reject if it can be created from the existing set
@@ -145,9 +150,9 @@ populate lib@Library{..} gen0 population = flip evalState gen0
 
           let pool' = pool `IS.union` cset
 
-          let ambiguity = [T.pack $ V.toList other | j <- [0..V.length libraryV - 1]
+          let ambiguity = [T.pack $ V.toList other | j <- [0..V.length lib.vector - 1]
                 , IM.notMember j board
-                , let other = libraryV V.! j
+                , let other = lib.vector V.! j
                 , toCharSet other /= cset -- 色即是空　空即是色
                 , reachable pool' other]
           guard $ case ambiguity of
@@ -168,18 +173,18 @@ checkFinish :: Library
   -> Board
   -> Writer [Int] Board
 checkFinish library board = do
-  jukugos' <- iforM (_jukugos board)
-    $ \i jukugo -> if not (_finished jukugo) && HS.member (fmap charC $ _content jukugo) (libraryS library)
+  jukugos' <- iforM board.jukugos
+    $ \i jukugo -> if not (jukugo.finished) && HS.member (fmap (.char) $ jukugo.content) library.hashSet
       then do
         tell [i]
-        pure jukugo { _finished = True }
+        pure jukugo { finished = True }
       else pure jukugo
-  pure board { _jukugos = jukugos' }
+  pure board { jukugos = jukugos' }
 
 data Library = Library
-  { libraryS :: HS.HashSet (V.Vector Char)
-  , libraryV :: V.Vector (V.Vector Char)
-  , libraryDifficulty :: V.Vector Int
+  { hashSet :: HS.HashSet (V.Vector Char)
+  , vector :: V.Vector (V.Vector Char)
+  , difficulty :: V.Vector Int
   , difficultyWeights :: V.Vector Int
   }
 
@@ -187,9 +192,9 @@ newLibrary :: [(Int, [T.Text])] -> Library
 newLibrary dataset = Library{..} where
   vecs :: [V.Vector (V.Vector Char)]
   vecs = V.fromList . map (V.fromList . T.unpack) . snd <$> dataset
-  libraryS = HS.fromList $ V.toList libraryV
-  libraryV = V.concat vecs
-  libraryDifficulty = V.fromList $ scanl (+) 0 $ map V.length vecs
+  hashSet = HS.fromList $ V.toList vector
+  vector = V.concat vecs
+  difficulty = V.fromList $ scanl (+) 0 $ map V.length vecs
   difficultyWeights = V.postscanl' (+) 0 $ V.fromList $ map fst dataset
 
 prop_no_stuck :: Int -> QC.Property

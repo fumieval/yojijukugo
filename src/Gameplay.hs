@@ -1,7 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Gameplay
   ( RoomState(..)
-  , roomLibrary
   , wsApp
   , saveSnapshot
   , Server(..)
@@ -56,94 +55,93 @@ palette =
   ]
 
 data RoomState = RoomState
-  { _roomPlayers :: IM.IntMap Player
-  , _roomBoard :: Board
-  , _roomPlayerConn :: IM.IntMap WS.Connection
-  , _roomFreshPlayerId :: Int
-  , _roomLastActivity :: UTCTime
-  , _roomLibrary :: Library
+  { players :: IM.IntMap Player
+  , board :: Board
+  , playerConn :: IM.IntMap WS.Connection
+  , freshPlayerId :: Int
+  , lastActivity :: UTCTime
+  , library :: Library
   } deriving Generic
 makeLenses ''RoomState
 
 data Server = Server
-  { rooms :: TVar (IM.IntMap (TVar RoomState))
+  { vRooms :: TVar (IM.IntMap (TVar RoomState))
   , refLibrary :: IORef Library
   , logger :: LogFunc
   }
 
 instance HasLogFunc Server where
-  logFuncL = lens logger $ \x f -> x { logger = f }
+  logFuncL = lens (.logger) $ \x f -> x { logger = f }
 
 data Session = Session
-  { sessionRoomId :: Int
-  , sessionRoom :: TVar RoomState
-  , sessionConn :: WS.Connection
-  , sessionServer :: Server
+  { roomId :: Int
+  , vRoom :: TVar RoomState
+  , conn :: WS.Connection
+  , server :: Server
   }
 instance HasLogFunc Session where
-  logFuncL f s = logFuncL f (sessionServer s) <&> \s' -> s { sessionServer = s'}
+  logFuncL f s = logFuncL f s.server <&> \s' -> s { server = s'}
 
 type SessionM = RIO Session
 
 send :: ServerMessage -> SessionM ()
 send msg = do
-  conn <- asks sessionConn
+  Session{conn} <- ask
   liftIO $ WS.sendTextData conn $ J.encode msg
 
 broadcast :: ServerMessage -> SessionM ()
 broadcast msg = do
-  room <- asks sessionRoom >>= readTVarIO
-  forM_ (_roomPlayerConn room)
+  room <- asks (.vRoom) >>= readTVarIO
+  forM_ room.playerConn
     $ \conn -> liftIO (WS.sendTextData conn (J.encode msg))
     `catch` \(_ :: SomeException) -> pure ()
 
 withPlayer :: (PlayerId -> SessionM a) -> SessionM a
 withPlayer cont = bracket
   (do
-    conn <- asks sessionConn
-    vRoom <- asks sessionRoom
+    Session{..} <- ask
     now <- liftIO getCurrentTime
     result <- atomically $ do
       room <- readTVar vRoom
-      let i = _roomFreshPlayerId room
+      let i = room.freshPlayerId
       let player = Player (defaultName i) (palette Prelude.!! mod i 12)
-      writeTVar vRoom
-        $ roomPlayers . at i ?~ player
-        $ roomPlayerConn . at i ?~ conn
-        $ roomFreshPlayerId +~ 1
-        $ roomLastActivity .~ now
-        $ room
+      writeTVar vRoom room
+        { lastActivity = now
+        , freshPlayerId = room.freshPlayerId + 1
+        , players = room.players & at i ?~ player
+        , playerConn = room.playerConn & at i ?~ conn
+        }
       pure (PlayerId i, player)
     send $ PutYou result
     broadcastPlayers
     pure $ fst result)
   (\(PlayerId i) -> do
-    vRoom <- asks sessionRoom
+    Session{vRoom} <- ask
     atomically $ modifyTVar vRoom
-      $ (roomPlayers %~ IM.delete i)
-      . (roomPlayerConn %~ IM.delete i)
+      $ \r -> r
+        { players = IM.delete i r.players
+        , playerConn = IM.delete i r.playerConn
+        }
     broadcastPlayers)
   cont
 
 recreateBoard :: SessionM ()
 recreateBoard = do
-  vRoom <- asks sessionRoom
-  server <- asks sessionServer
+  Session{..} <- ask
   room0 <- readTVarIO vRoom
-  lib <- readIORef $ refLibrary server
+  lib <- readIORef server.refLibrary
 
-  let nextLevel = _boardDifficulty (_roomBoard room0) + 1
-  roomId <- asks sessionRoomId
-  board <- liftIO $ generateBoard lib (roomId) nextLevel (_scoreboard $ _roomBoard room0)
-  atomically $ modifyTVar vRoom $ \room -> room { _roomBoard = board, _roomLibrary = lib }
+  let nextLevel = room0.board.difficulty + 1
+  board <- liftIO $ generateBoard lib roomId nextLevel (room0.board.scoreboard)
+  atomically $ modifyTVar' vRoom $ \room -> room { board = board, library = lib }
 
   saveSnapshot roomId board
   broadcast $ PutBoard board
 
 broadcastPlayers :: SessionM ()
 broadcastPlayers = do
-  room <- asks sessionRoom >>= readTVarIO
-  broadcast $ PutPlayers $ _roomPlayers room
+  room <- asks (.vRoom) >>= readTVarIO
+  broadcast $ PutPlayers room.players
 
 latestSnapshotPath :: Int -> FilePath
 latestSnapshotPath roomId = "snapshots" </> show roomId </> "latest.json"
@@ -161,35 +159,35 @@ saveSnapshot roomId board = do
 closeInactiveRooms :: RIO Server ()
 closeInactiveRooms = do
   Server{..} <- ask
-  m <- readTVarIO rooms
+  m <- readTVarIO vRooms
   now <- liftIO getCurrentTime
   forM_ (IM.toList m) $ \(i, v) -> do
     room <- readTVarIO v
-    when (null (_roomPlayers room) && diffUTCTime now (_roomLastActivity room) > 60) $ do
-      saveSnapshot i (_roomBoard room)
+    when (null (room.players) && diffUTCTime now room.lastActivity > 60) $ do
+      saveSnapshot i room.board
       logInfo $ "Closed room " <> display i <> " due to inactivity"
-      atomically $ modifyTVar' rooms $ IM.delete i
+      atomically $ modifyTVar' vRooms $ IM.delete i
 
 updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())
 updateBoard Session{..} playerId board = do
-  room <- readTVar sessionRoom
-  let name = room ^. roomPlayers . ix (unPlayerId playerId) . playerName
-  let (board', done) = runWriter $ checkFinish (_roomLibrary room) board
-  let board'' = board' & scoreboard %~ Map.insertWith (+) name (length done)
-  writeTVar sessionRoom $ room & roomBoard .~ board''
+  room <- readTVar vRoom
+  let name = room.players ^. ix playerId.unPlayerId . RIO.to (.name)
+  let (board', done) = runWriter $ checkFinish room.library board
+  let board'' = board' { scoreboard = Map.insertWith (+) name (length done) board'.scoreboard }
+  writeTVar vRoom $ room { board = board'' }
   pure $ do
     now <- liftIO getCurrentTime
-    atomically $ modifyTVar' sessionRoom $ roomLastActivity .~ now
+    atomically $ modifyTVar' vRoom $ \r -> r { lastActivity = now }
     forM_ done $ broadcast . AckDone
     unless (null done) $ do
-      broadcast $ PutScoreboard $ board'' ^. scoreboard
+      broadcast $ PutScoreboard $ board''.scoreboard
       checkComplete
 
 checkComplete :: SessionM ()
 checkComplete = do
   Session{..} <- ask
-  board <- _roomBoard <$> readTVarIO sessionRoom
-  when (all _finished (_jukugos board)) $ do
+  board <- (.board) <$> readTVarIO vRoom
+  when (all (.finished) (board.jukugos)) $ do
     broadcast LevelFinished
     _ <- forkIO $ do
         threadDelay $ 3 * 1000000
@@ -203,16 +201,16 @@ handleMessage playerId msg = do
   case msg of
     Heartbeat -> pure ()
     SetPlayerName name -> do
-      atomically $ modifyTVar' sessionRoom
-        $ roomPlayers . ix (unPlayerId playerId) . playerName .~ name
+      atomically $ modifyTVar' vRoom
+        $ \room -> room { players = room.players & ix playerId.unPlayerId %~ \p -> p { name = name } }
       broadcastPlayers
     Touch i -> broadcast $ AckTouch playerId i
     Untouch i -> broadcast $ AckUntouch playerId i
     Swap (i, j) -> join $ atomically $ do
       let p = divMod i 4
       let q = divMod j 4
-      room <- readTVar sessionRoom
-      case swap p q $ _roomBoard room of
+      room <- readTVar vRoom
+      case swap p q $ room.board of
         Nothing -> pure mempty -- ERROR
         Just board -> (broadcast (AckSwap playerId i j)>>)
           <$> updateBoard session playerId board
@@ -220,10 +218,10 @@ handleMessage playerId msg = do
 sessionLoop :: SessionM ()
 sessionLoop = withPlayer $ \playerId -> do
   Session{..} <- ask
-  readTVarIO sessionRoom >>= \room -> send $ PutBoard (_roomBoard room)
+  readTVarIO vRoom >>= \room -> send $ PutBoard (room.board)
   checkComplete
 
-  fix $ \self -> liftIO (WS.receive sessionConn) >>= \case
+  fix $ \self -> liftIO (WS.receive conn) >>= \case
     WS.DataMessage _ _ _ (WS.Text jsonStr _) -> do
       case J.decode jsonStr of
         Nothing -> logError $ "Failed to parse: " <> displayShow jsonStr
@@ -233,17 +231,17 @@ sessionLoop = withPlayer $ \playerId -> do
     _ -> self
 
 wsApp :: Server -> WS.ServerApp
-wsApp sessionServer pending = do
-  sessionConn <- WS.acceptRequest pending
-  _hello <- WS.receive sessionConn
-  sessionRoomId <- case filter (not . C8.null) $ C8.split '/' $ WS.requestPath $ WS.pendingRequest pending of
+wsApp server pending = do
+  conn <- WS.acceptRequest pending
+  _hello <- WS.receive conn
+  roomId <- case filter (not . C8.null) $ C8.split '/' $ WS.requestPath $ WS.pendingRequest pending of
     ["game", str] | Just i <- readMaybe (C8.unpack str) -> pure i
     s -> error $ "Failed to parse roomId: " ++ show s
-  sessionRoom <- acquireRoom sessionServer sessionRoomId
+  vRoom <- acquireRoom server roomId
 
   runRIO Session{..} $ sessionLoop `finally` do
-    board <- _roomBoard <$> readTVarIO sessionRoom
-    saveSnapshot sessionRoomId board
+    room <- readTVarIO vRoom
+    saveSnapshot roomId room.board
 
 createRoom :: Server -> Int -> IO (TVar RoomState)
 createRoom Server{..} roomId = do
@@ -255,50 +253,50 @@ createRoom Server{..} roomId = do
     then either error id <$> J.eitherDecodeFileStrict path
     else generateBoard library roomId 2 mempty
   v <- newTVarIO $ RoomState
-    { _roomPlayers = mempty
-    , _roomBoard = board
-    , _roomPlayerConn = mempty
-    , _roomFreshPlayerId = 0
-    , _roomLastActivity = now
-    , _roomLibrary = library
+    { players = mempty
+    , board = board
+    , playerConn = mempty
+    , freshPlayerId = 0
+    , lastActivity = now
+    , library = library
     }
   runRIO logger $ logInfo $ "Created room #" <> display roomId
   pure v
 
 acquireRoom :: Server -> Int -> IO (TVar RoomState)
 acquireRoom server@Server{..} roomId = do
-  m <- readTVarIO rooms
+  m <- readTVarIO vRooms
   case IM.lookup roomId m of
     Nothing -> do
       v <- createRoom server roomId
-      atomically $ modifyTVar' rooms $ IM.insert roomId v
+      atomically $ modifyTVar' vRooms $ IM.insert roomId v
       pure v
     Just room -> pure room
 
 newServer :: Config -> LogFunc -> IO Server
 newServer cfg logger = do
-  rooms <- newTVarIO mempty
+  vRooms <- newTVarIO mempty
   lib <- runRIO logger $ loadConfig cfg
   refLibrary <- newIORef lib
   pure Server{..}
 
 data Config = Config
-  { cfgDictionaries :: [DictionarySource]
-  , cfgPort :: Int
+  { dictionaries :: [DictionarySource]
+  , port :: Int
   } deriving (Generic)
-  deriving (FromJSON, ToJSON) via PrefixedSnake "cfg" Config
+  deriving (FromJSON, ToJSON) via Vanilla Config
 
 data DictionarySource = DictionarySource
-  { dicPath :: FilePath
-  , dicWeight :: Int
+  { path :: FilePath
+  , weight :: Int
   } deriving (Generic)
-  deriving (FromJSON, ToJSON) via PrefixedSnake "dic" DictionarySource
+  deriving (FromJSON, ToJSON) via Vanilla DictionarySource
 
 loadConfig :: HasLogFunc r => Config -> RIO r Library
 loadConfig Config{..} = do
-  dataset <- forM cfgDictionaries $ \dic -> do
-    ws <- T.lines <$> readFileUtf8 (dicPath dic)
-    pure (dicWeight dic, ws)
+  dataset <- forM dictionaries $ \dic -> do
+    ws <- T.lines <$> readFileUtf8 dic.path
+    pure (dic.weight, ws)
   let lib = newLibrary dataset
-  logInfo $ "Loaded " <> display (V.length (libraryV lib)) <> " words"
+  logInfo $ "Loaded " <> display (V.length lib.vector) <> " words"
   pure lib
