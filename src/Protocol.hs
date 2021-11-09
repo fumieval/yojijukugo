@@ -2,7 +2,7 @@
 module Protocol where
 
 import Control.Lens (makeLenses)
-import qualified Data.IntMap.Strict as IM
+import Data.IntMap.Strict qualified as IM
 import Deriving.Aeson
 import Deriving.Aeson.Stock
 import Data.Text (Text)

@@ -5,20 +5,20 @@ module Main where
 
 import RIO hiding ((^.), (%~), (.~), lens)
 
-import UnliftIO.Concurrent (forkIO)
-import qualified Prelude
 import Control.Lens
-import Protocol
+import Data.Aeson qualified as J
+import Data.Yaml qualified as Yaml
 import Gameplay
-import Web.Scotty
-import qualified Data.Aeson as J
-import qualified Network.Wai.Handler.Warp as Warp
-import qualified Network.Wai.Handler.WebSockets as WS
-import qualified Network.WebSockets as WS
+import Network.Wai.Handler.Warp qualified as Warp
+import Network.Wai.Handler.WebSockets qualified as WS
+import Network.Wai.Middleware.Static qualified as W
+import Network.WebSockets qualified as WS
+import Protocol
+import RIO.Text qualified as T
 import System.Environment (getArgs)
-import qualified Network.Wai.Middleware.Static as W
-import qualified RIO.Text as T
-import qualified Data.Yaml as Yaml
+import UnliftIO.Concurrent (forkIO)
+import Web.Scotty
+import qualified Prelude
 
 main :: IO ()
 main = do
@@ -29,12 +29,12 @@ main = do
     cfg <- Yaml.decodeFileThrow cfgPath
     server <- newServer cfg lf
     app <- scottyApp $ do
-      get "/game/:id" $ 
+      get "/game/:id" $
         file "index.html"
 
     _ <- forkIO $ forever $ do
       threadDelay $ 10 * 1000000
-      runRIO server closeInactiveRooms 
+      runRIO server closeInactiveRooms
     _ <- forkIO $ Warp.run (cfgPort cfg)
       $ WS.websocketsOr WS.defaultConnectionOptions (wsApp server)
       $ W.static app

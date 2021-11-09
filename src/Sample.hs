@@ -1,9 +1,13 @@
 module Sample where
 
+import Control.Lens (ATraversal', cloneTraversal)
+import Control.Monad.Trans.State
+import Data.Functor.Compose
+import Data.Heap qualified as H
+import Data.IntSet qualified as IS
+import Data.Vector qualified as V
 import Data.Vector.Instances ()
 import System.Random.Stateful
-import qualified Data.IntSet as IS
-import qualified Data.Vector as V
 
 weights :: RandomGenM g r m
   => V.Vector Int -- ^ monotonic
@@ -26,3 +30,19 @@ intSet gen s = case IS.splitRoot s of
       then intSet gen l
       else intSet gen r
   _ -> pure Nothing
+
+shuffle :: forall s a gen. RandomGen gen => gen -> ATraversal' s a -> s -> s
+shuffle gen0 trav struct =
+  let (popper, (h, _)) = runState
+        (getCompose $ cloneTraversal trav act struct)
+        (H.empty, gen0)
+  in evalState popper h
+  where
+    act :: a -> Compose (State (H.Heap (H.Entry Int a), gen)) (State (H.Heap (H.Entry Int a))) a
+    act a = Compose $ state $ \(h, gen) ->
+      let (r, gen') = uniform gen
+          !h' = H.insert (H.Entry r a) h
+      in (pop, (h', gen'))
+    pop = state $ \h -> case H.viewMin h of
+      Nothing -> error "Impossible"
+      Just (H.Entry _ a, h') -> (a, h')

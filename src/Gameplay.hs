@@ -12,27 +12,27 @@ module Gameplay
   , loadConfig
   ) where
 
-import UnliftIO.Concurrent (forkIO)
-import qualified Prelude
 import Control.Lens
 import Control.Monad
+import Control.Monad.Writer
+import Data.Aeson qualified as J
+import Data.ByteString.Char8 qualified as C8
 import Data.Function
+import Data.IntMap.Strict qualified as IM
+import Data.Map.Strict qualified as Map
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
+import Data.Vector qualified as V
 import Deriving.Aeson
 import Deriving.Aeson.Stock
 import Logic
+import Network.WebSockets qualified as WS
 import Protocol
-import qualified Data.Aeson as J
-import qualified Data.ByteString.Char8 as C8
-import qualified Data.IntMap.Strict as IM
-import qualified Data.Map.Strict as Map
-import qualified Network.WebSockets as WS
-import qualified Data.Vector as V
 import RIO hiding ((^.), (%~), (.~), lens)
-import Control.Monad.Writer
-import RIO.FilePath ((</>))
 import RIO.Directory (copyFile, doesFileExist, createDirectoryIfMissing)
-import Data.Time (defaultTimeLocale, formatTime, getCurrentTime, UTCTime, diffUTCTime)
-import qualified RIO.Text as T
+import RIO.FilePath ((</>))
+import RIO.Text qualified as T
+import UnliftIO.Concurrent (forkIO)
+import qualified Prelude
 
 defaultName :: Int -> Text
 defaultName i = T.pack $ "無名　" ++ [stems V.! mod i 10, branches V.! mod i 12] where
@@ -42,7 +42,7 @@ defaultName i = T.pack $ "無名　" ++ [stems V.! mod i 10, branches V.! mod i 
 palette :: [String]
 palette =
   [ "#00DD50"
-  , "#FF00FF"   
+  , "#FF00FF"
   , "#DDDD00"
   , "#40FF40"
   , "#8000FF"
@@ -167,7 +167,7 @@ closeInactiveRooms = do
     room <- readTVarIO v
     when (null (_roomPlayers room) && diffUTCTime now (_roomLastActivity room) > 60) $ do
       saveSnapshot i (_roomBoard room)
-      logInfo $ "Closed room " <> display i <> " due to inactivity" 
+      logInfo $ "Closed room " <> display i <> " due to inactivity"
       atomically $ modifyTVar' rooms $ IM.delete i
 
 updateBoard :: Session -> PlayerId -> Board -> STM (SessionM ())

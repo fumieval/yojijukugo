@@ -15,25 +15,23 @@ module Logic
   , newLibrary
   , prop_no_stuck) where
 
-import RIO hiding ((^.), (%~), (.~), lens, (^?))
 import Control.Lens hiding (Prefixed)
 import Control.Lens.Unsound
 import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.State
 import Control.Monad.Trans.Writer
-import Data.Functor.Compose
+import Data.HashSet qualified as HS
+import Data.IntMap.Strict qualified as IM
+import Data.IntSet qualified as IS
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import Data.Vector.Instances ()
 import Deriving.Aeson.Stock
+import RIO hiding ((^.), (%~), (.~), lens, (^?))
+import Sample qualified
 import System.Random.Stateful
-import Control.Monad.Trans.State
-import qualified Data.HashSet as HS
-import qualified Data.IntMap.Strict as IM
-import qualified Data.IntSet as IS
-import qualified Data.Map.Strict as Map
-import qualified Data.Vector as V
-import qualified Data.Text as T
-import qualified Test.QuickCheck as QC
-import qualified Data.Heap as H
-import qualified Sample
+import Test.QuickCheck qualified as QC
 
 data Character = Character
   { charI :: Int
@@ -81,24 +79,8 @@ swap (r0, c0) (r1, c1)
       pure (Just alpha', Just bravo')
     x -> pure x
 
-shuffle :: forall s a gen. RandomGen gen => gen -> ATraversal' s a -> s -> s
-shuffle gen0 trav struct =
-  let (popper, (h, _)) = runState
-        (getCompose $ cloneTraversal trav act struct)
-        (H.empty, gen0)
-  in evalState popper h
-  where
-    act :: a -> Compose (State (H.Heap (H.Entry Int a), gen)) (State (H.Heap (H.Entry Int a))) a
-    act a = Compose $ state $ \(h, gen) ->
-      let (r, gen') = uniform gen
-          !h' = H.insert (H.Entry r a) h
-      in (pop, (h', gen'))
-    pop = state $ \h -> case H.viewMin h of
-      Nothing -> error "Impossible"
-      Just (H.Entry _ a, h') -> (a, h')
-
 randomise :: StdGen -> Board -> Board
-randomise gen = jukugos %~ shuffle gen (traverse . content . each)
+randomise gen = jukugos %~ Sample.shuffle gen (traverse . content . each)
 
 generateBoard
   :: Library -- ^ all list of jukugos
