@@ -40,11 +40,15 @@ main = do
       $ W.static app
     runRIO server $ do
       logInfo "Started the server"
-      forever (liftIO prompt >>= commandHandler) `finally` do
-        rooms <- readTVarIO $ server.vRooms
-        iforM_ rooms $ \i vRoom -> do
-          room <- readTVarIO vRoom
-          saveSnapshot i room.board
+      forever (liftIO prompt >>= commandHandler) `finally` shutdown
+
+shutdown :: RIO Server ()
+shutdown = do
+  server <- ask
+  rooms <- readTVarIO $ server.vRooms
+  iforM_ rooms $ \i vRoom -> do
+    room <- readTVarIO vRoom
+    saveSnapshot i room.board
 
 commandHandler :: [String] -> RIO Server ()
 commandHandler = \case
