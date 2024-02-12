@@ -25,7 +25,7 @@ executable yojijukugo
     Protocol
     Sample
   -- other-extensions:
-  build-depends:       base >=4.14 && <4.17, scotty, websockets, vector, random, text
+  build-depends:       base >=4.14 && <5, scotty, websockets, vector, random, text
     , bytestring
     , containers
     , unordered-containers

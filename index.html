@@ -1,11 +1,9 @@
 <html>
   <head>
-    <meta charset=utf-8>
+    <meta charset="utf-8" />
     <title>四字熟語電脳遊戯</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <script src="//cdnjs.cloudflare.com/ajax/libs/vue/2.5.2/vue.min.js"></script>
-    <!-- CDNJS :: Sortable (https://cdnjs.com/) -->
-    <script src="https://unpkg.com/vue-cookies@1.7.4/vue-cookies.js"></script>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
   </head>
   <body>
     <div id="app">
@@ -13,54 +11,75 @@
       <div id="message" v-if='server_message != ""'>{{ server_message }}</div>
       <div id="columns">
         <transition-group id="table" tag="div" name="swap">
-          <div scope="row"
+          <div
+            v-for="(char, index) in board.value"
+            scope="row"
             class="cell"
-            v-for="(char, index) in board"
-            v-bind:key="char.i"
+            :key="char.id"
             :data-col-id="index"
             v-bind:style="index in styles ? styles[index] : null"
             v-on:click="click_char"
             v-bind:class="{ selected: !(selected === null) && selected == index || index in touching
               , finished: char.finished
-              , spacer: index % 8 == 3 }">
-            {{ char.c }}
+              , spacer: index % 8 == 3 }"
+          >
+            {{ char.char }}
           </div>
         </transition-group>
         <ul id="players">
-          <li v-for="(player, name) in players"
-            v-bind:style='{ borderColor: player.color }'
-            class="player">
-            <input class="name" v-if="player.id == my_id.toString()" type="text" placeholder="名前入力" v-model="my_name">
+          <li
+            v-for="(player, name) in players.value"
+            v-bind:style="{ borderColor: player.color }"
+            class="player"
+          >
+            <input
+              class="name"
+              v-if="player.id == my_id.toString()"
+              type="text"
+              placeholder="名前入力"
+              v-model="my_name"
+            />
             <div v-else class="name">{{ name }}</div>
             <div class="score">
               {{ name in scoreboard ? scoreboard[name] : 0 }}
             </div>
           </li>
-          <li v-for="(score, name) in scoreboard" v-if="!(name in players)" class="player">
+          <li
+            v-for="(score, name) in scoreboard.value"
+            v-if="!(name in players)"
+            class="player"
+          >
             <div class="name">{{ name }}</div>
-            <div class="score">
-              {{ score }}
-            </div>
+            <div class="score">{{ score }}</div>
           </li>
         </ul>
       </div>
-      音量調節 <input type="range" min="0" max="10" v-model="volume">
+      音量調節 <input type="range" min="0" max="10" v-model="volume" />
       <div>
         <h2>更新記録</h2>
         <ul>
           <li>二月四日 午の刻 - 詰みを防ぐ仕組みを改良しました</li>
           <li>二月三日 酉の刻 - 配置を二列にしました</li>
-          <li>二月三日 酉の刻 - 詰みになりうる問題が生成されにくくなりました</li>
+          <li>
+            二月三日 酉の刻 - 詰みになりうる問題が生成されにくくなりました
+          </li>
           <li>二月三日 酉の刻 - 点数が保存されるようになりました</li>
-          <li>二月三日 酉の刻 - 選手が触れていた場所の枠線が消えない不具合を修正しました</li>
+          <li>
+            二月三日 酉の刻 -
+            選手が触れていた場所の枠線が消えない不具合を修正しました
+          </li>
         </ul>
       </div>
-      <div v-if="error !== null" id="error">
-        {{ error }}
-      </div>
+      <div v-if="error !== null" id="error">{{ error }}</div>
       <footer>
         <!-- Place this tag where you want the button to render. -->
-<a class="github-button" href="https://github.com/rampaging-fridge/yojijukugo" data-icon="octicon-star" aria-label="Star rampaging-fridge/yojijukugo on GitHub">星</a>
+        <a
+          class="github-button"
+          href="https://github.com/rampaging-fridge/yojijukugo"
+          data-icon="octicon-star"
+          aria-label="Star rampaging-fridge/yojijukugo on GitHub"
+          >星</a
+        >
       </footer>
     </div>
     <!-- Place this tag in your head or just before your close body tag. -->
@@ -73,185 +92,212 @@
     <audio src="/static/reverse-hihat.mp3" id="a-reverse-hihat"></audio>
     <audio src="/static/somebody-scream.mp3" id="a-somebody-scream"></audio>
     <script>
-      const draggable = window['vuedraggable'];
-      let scheme = location.protocol === 'https:' ? "wss://" : "ws://";
+      let scheme = location.protocol === "https:" ? "wss://" : "ws://";
       let ws = new WebSocket(scheme + location.host + location.pathname);
-      let app = new Vue({
-        el: '#app',
-        data: {
-          board: {},
-          scoreboard: {},
-          selected: null,
-          my_id: null,
-          my_name: null,
-          me: null,
-          styles: {},
-          players: {},
-          players_by_id: {},
-          touching: {},
-          difficulty: 0,
-          server_message: "",
-          volume: 5,
-          error: null,
-        },
-        watch: {
-          my_name: function(val, oldVal) {
-            $cookies.set("player_name", val);
-            ws.send(JSON.stringify({SetPlayerName: val}));
-          },
-          volume: function(val, oldVal) {
-            for (elem of document.getElementsByTagName("audio")){
+
+      // rewrite in vue 3:
+      const { createApp, ref, reactive, watch } = Vue;
+
+      createApp({
+        setup() {
+          const board = reactive({});
+          const scoreboard = reactive({});
+          const selected = ref(null);
+          const my_id = ref(null);
+          const my_name = ref(null);
+          const me = ref(null);
+          const styles = reactive({});
+          const players = reactive({});
+          const players_by_id = reactive({});
+          const touching = reactive({});
+          const difficulty = ref(0);
+          const server_message = ref("");
+          const volume = ref(5.0);
+          const error = ref(null);
+
+          watch(my_name, (val, oldVal) => {
+            localStorage.set("player_name", val);
+            ws.send(JSON.stringify({ SetPlayerName: val }));
+          });
+          watch(volume, (val, oldVal) => {
+            for (elem of document.getElementsByTagName("audio")) {
               elem.volume = val / 10;
-            };
-            $cookies.set("volume", val);
+            }
+            localStorage.set("volume", val);
             let sound = document.getElementById("a-rei");
             sound.currentTime = 0;
             sound.play();
-          }
-        },
-        methods: {
-          click_char: function(event) {
+          });
+
+          function click_char(event) {
             let target = event.target.dataset.colId;
-            if (this.board[target].finished){
+            if (board.value[target].finished) {
               return;
             }
-            let style = { outlineColor: this.me.color };
-            if (this.selected === null) {
-              this.selected = target;
-              Vue.set(app.styles, target, style);
-              ws.send(JSON.stringify({Touch: parseInt(target)}));
+            let style = { outlineColor: me.color };
+            if (selected.value === null) {
+              selected.value = target;
+              Object.assign(styles, { [target]: style });
+              ws.send(JSON.stringify({ Touch: parseInt(target) }));
 
               let sound = document.getElementById("a-hihat");
               sound.currentTime = 0;
               sound.play();
             } else {
-              if (target === this.selected)
-              {
+              if (target === selected.value) {
                 let sound = document.getElementById("a-reverse-hihat");
                 sound.currentTime = 0;
                 sound.play();
-                ws.send(JSON.stringify({Untouch: parseInt(target)}));
-              }
-              else {
-                Vue.set(app.styles, target, style);
-                ws.send(JSON.stringify({Swap: [parseInt(target), parseInt(this.selected)]}));
+                ws.send(JSON.stringify({ Untouch: parseInt(target) }));
+              } else {
+                Object.assign(styles, { [target]: style });
+                ws.send(
+                  JSON.stringify({
+                    Swap: [parseInt(target), parseInt(selected.value)],
+                  }),
+                );
 
                 let sound = document.getElementById("a-rei");
                 sound.currentTime = 0;
                 sound.play();
               }
 
-              this.selected = null;
-
+              selected.value = null;
             }
           }
-        },
-        components: { draggable },
-      });
-      ws.addEventListener('message', event => {
-        let obj = JSON.parse(event.data);
-        if (obj === null) return;
-        if ("PutBoard" in obj){
-          app.scoreboard = obj.PutBoard.scoreboard;
-          app.difficulty = obj.PutBoard.boardDifficulty;
-          app.styles = {};
-          let jukugos = obj.PutBoard.jukugos;
-          app.board = jukugos.flatMap(function (jukugo){
-            let result = jukugo[1].content;
-            if (jukugo[1].finished) {
-              for (elem of result) {
-                elem.finished = true;
+
+          ws.addEventListener("message", (event) => {
+            let obj = JSON.parse(event.data);
+            if (obj === null) return;
+            if ("PutBoard" in obj) {
+              scoreboard.value = obj.PutBoard.scoreboard;
+              difficulty.value = obj.PutBoard.boardDifficulty;
+              styles.value = {};
+              let jukugos = obj.PutBoard.jukugos;
+              board.value = jukugos.flatMap(function (jukugo) {
+                let result = jukugo[1].content;
+                if (jukugo[1].finished) {
+                  for (elem of result) {
+                    elem.finished = true;
+                  }
+                }
+                let sound = document.getElementById("a-bell");
+                sound.currentTime = 0;
+                sound.play();
+                return result;
+              });
+            } else if ("PutPlayers" in obj) {
+              let result = {};
+              for (let elem of obj.PutPlayers) {
+                elem[1].id = elem[0];
+                result[elem[1].name] = elem[1];
               }
+              players.value = result;
+
+              for (let elem of obj.PutPlayers) {
+                Object.assign(styles, { [elem[0]]: elem[1] });
+              }
+            } else if ("PutScoreboard" in obj) {
+              scoreboard.value = obj.PutScoreboard;
+            } else if ("PutYou" in obj) {
+              my_id.value = obj.PutYou[0];
+              me.value = obj.PutYou[1];
+            } else if ("PutStatus" in obj) {
+              server_message.value = obj.PutStatus;
+            } else if ("LevelFinished" in obj) {
+              let sound = document.getElementById("a-dora");
+              sound.currentTime = 0;
+              sound.play();
+            } else if ("AckTouch" in obj) {
+              let msg = obj.AckTouch;
+              if (my_id.value === msg[0]) return;
+              let style = { outlineColor: players_by_id.value[msg[0]].color };
+              Object.assign(styles.value, { [msg[1]]: style });
+              Object.assign(touching.value, { [msg[1]]: msg[0] });
+            } else if ("AckUntouch" in obj) {
+              let msg = obj.AckUntouch;
+              let sender = msg[0];
+              if (my_id.value === sender || !(msg[1] in touching.value)) return;
+              if (sender == touching.value[msg[1]]) {
+                app.$delete(touching.value, msg[1]);
+              }
+            } else if ("AckSwap" in obj) {
+              let msg = obj.AckSwap;
+              let orig = board.value[msg[1]];
+              Object.assign(board.value, { [msg[1]]: board.value[msg[2]] });
+              Object.assign(board.value, { [msg[2]]: orig });
+              let style = { outlineColor: players_by_id.value[msg[0]].color };
+              Object.assign(styles.value, { [msg[1]]: style });
+              Object.assign(styles.value, { [msg[2]]: style });
+              delete touching[msg[1]];
+              delete touching[msg[2]];
+              if (my_id.value !== msg[0]) {
+                if (selected.value === msg[1]) {
+                  selected.value = msg[2];
+                }
+                if (selected.value === msg[2]) {
+                  selected.value = msg[1];
+                }
+              }
+            } else if ("AckDone" in obj) {
+              let row = obj.AckDone;
+              for (let i = row * 4; i < row * 4 + 4; i++) {
+                Object.assign(board.value[i], { finished: true });
+              }
+              if (
+                board.value[row * 4].c == "三" &&
+                board.value[row * 4 + 1].c == "倍" &&
+                board.value[row * 4 + 2].c == "氷" &&
+                board.value[row * 4 + 3].c == "菓"
+              ) {
+                let sound = document.getElementById("a-somebody-scream");
+                sound.currentTime = 0;
+                sound.play();
+              } else {
+                let sound = document.getElementById("a-cymbal");
+                sound.currentTime = 0;
+                sound.play();
+              }
+            } else {
+              console.log(obj);
             }
-            let sound = document.getElementById("a-bell");
-            sound.currentTime = 0;
-            sound.play();
-            return result});
-        } else if ("PutPlayers" in obj) {
-          let result = {};
-          for (let elem of obj.PutPlayers){
-            elem[1].id = elem[0];
-            result[elem[1].name] = elem[1];
-          }
-          app.players = result;
+          });
 
-          for (let elem of obj.PutPlayers){
-            Vue.set(app.players_by_id, elem[0], elem[1]);
-          }
-        } else if ("PutScoreboard" in obj) {
-          app.scoreboard = obj.PutScoreboard;
-        } else if ("PutYou" in obj) {
-          app.my_id = obj.PutYou[0];
-          app.me = obj.PutYou[1];;
-        } else if ("PutStatus" in obj) {
-          app.server_message = obj.PutStatus;
-        } else if ("LevelFinished" in obj) {
-          let sound = document.getElementById("a-dora");
-          sound.currentTime = 0;
-          sound.play();
-        } else if ("AckTouch" in obj) {
-          let msg = obj.AckTouch;
-          if (app.my_id === msg[0]) return;
-          let style = { outlineColor: app.players_by_id[msg[0]].color };
-          Vue.set(app.styles, msg[1], style);
-          Vue.set(app.touching, msg[1], msg[0]);
-        } else if ("AckUntouch" in obj) {
-          let msg = obj.AckUntouch;
-          let sender = msg[0];
-          if (app.my_id === sender || !(msg[1] in app.touching)) return;
-          if (sender == app.touching[msg[1]]) {
-            app.$delete(app.touching, msg[1]);
-          }
-        } else if ("AckSwap" in obj) {
-          let msg = obj.AckSwap;
-          let orig = app.board[msg[1]];
-          Vue.set(app.board, msg[1], app.board[msg[2]]);
-          Vue.set(app.board, msg[2], orig);
-          let style = { outlineColor: app.players_by_id[msg[0]].color };
-          Vue.set(app.styles, msg[1], style);
-          Vue.set(app.styles, msg[2], style);
-          app.$delete(app.touching, msg[1]);
-          app.$delete(app.touching, msg[2]);
-          if (app.my_id !== msg[0]) {
-            if (this.selected === msg[1]) { this.selected = msg[2] };
-            if (this.selected === msg[2]) { this.selected = msg[1] };
-          }
-        } else if ("AckDone" in obj){
-          let row = obj.AckDone;
-          for (let i=row*4; i < row*4+4; i++){
-            Vue.set(app.board[i], "finished", true);
-          }
-          if (app.board[row*4].c == '三' && app.board[row*4+1].c == '倍' && app.board[row*4+2].c == '氷' && app.board[row*4+3].c == '菓'){
-            let sound = document.getElementById("a-somebody-scream");
-            sound.currentTime = 0;
-            sound.play();
-          } else {
-            let sound = document.getElementById("a-cymbal");
-            sound.currentTime = 0;
-            sound.play();
-          }
+          return {
+            board,
+            scoreboard,
+            selected,
+            my_id,
+            my_name,
+            me,
+            styles,
+            players,
+            players_by_id,
+            touching,
+            difficulty,
+            server_message,
+            volume,
+            error,
+            click_char,
+          };
+        },
+      }).mount("#app");
 
-        } else {
-          console.log(obj);
-        }
-      });
-
-      ws.addEventListener('open', event => {
+      ws.addEventListener("open", (event) => {
         ws.send("hello");
 
-        app.my_name = $cookies.get("player_name");
-        app.volume = $cookies.get("volume");
+        // my_name.value = localStorage.get("player_name");
+        // volume.value = $cookies.get("volume") ?? 5;
 
-        function heartbeat(){
-          ws.send(JSON.stringify({Heartbeat: []}));
+        function heartbeat() {
+          ws.send(JSON.stringify({ Heartbeat: [] }));
           window.setTimeout(heartbeat, 2000.0);
         }
         heartbeat();
-
       });
-      ws.onerror = event => { app.error = event.message };
-      
+      ws.onerror = (event) => {
+        error.value = event.message;
+      };
     </script>
-    
   </body>
 </html>
